@@ -10,6 +10,7 @@ from dataclasses import dataclass, replace
 import os
 from pathlib import Path
 
+from ignition.components.capacity import request_capacity
 from ignition.errors import CapacityError, UsageError
 from ignition.preparation.tuning_replicas import TuningReplica
 from ignition.recipes.declaration import Checkpoint, Recipe, Speculation
@@ -336,7 +337,8 @@ def fit(recipe: Recipe, checkpoint: Checkpoint, gpus: tuple[Gpu, ...], *, concur
     costs = recipe.costs(len(gpus), speculation, checkpoint)
     plan = Plan(recipe, checkpoint, gpus, concurrency, recipe.prefill_chunk if prefill_chunk is None else prefill_chunk,
                 speculation, 0, 0, 0, reserve_bytes,
-                recipe.weights_bytes(checkpoint, len(gpus), speculation, expert_scale_compression), costs.graph_bytes,
+                recipe.weights_bytes(checkpoint, len(gpus), speculation, expert_scale_compression),
+                costs.graph_bytes + request_capacity(concurrency) * costs.request_scratch_bytes,
                 context_parallel=context_parallel and costs.page_tokens is not None,
                 stream_overlap=stream_overlap and recipe.stream_overlap, mixed_prefill=mixed_prefill, prompt_logprobs=prompt_logprobs,
                 expert_scale_compression=expert_scale_compression, roce_ring=roce_ring,

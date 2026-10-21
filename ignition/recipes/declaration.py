@@ -136,6 +136,12 @@ class RankCosts:
     draft_page_bytes: int = 0
     # Global positions per page when ranks share each page's context; the recipe's page size otherwise.
     page_tokens: int | None = None
+    # Scratch retained by each prepared request slot, separate from continuation rows.
+    request_scratch_bytes: int = 0
+
+    def __post_init__(self):
+        if type(self.request_scratch_bytes) is not int or self.request_scratch_bytes < 0:
+            raise ValueError("per-request scratch must be a nonnegative integer")
 
 
 @dataclass(frozen=True)

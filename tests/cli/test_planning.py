@@ -85,6 +85,40 @@ def test_pages_take_all_remaining_supply():
     assert whole.supply_bytes - whole.page_bytes - whole.fixed_bytes < 2 * MIB
 
 
+def test_request_scratch_reduces_pages_for_padded_request_capacity():
+    costs = replace(SOLO.ranks[1], request_scratch_bytes=256 * MIB)
+    budgeted = replace(SOLO, ranks=MappingProxyType({**SOLO.ranks, 1: costs}))
+    ordinary = derive(concurrency=3)
+    prepared = derive(budgeted, concurrency=3)
+    # Three admitted requests prepare four slots. Scratch is separate from
+    # snapshot rows and cannot be handed to the KV allocator.
+    assert prepared.graph_bytes - ordinary.graph_bytes == GIB
+    assert ordinary.pages - prepared.pages == GIB // costs.page_bytes
+    assert prepared.to_dict()["graph_bytes"] == prepared.graph_bytes
+    one = derive(budgeted, concurrency=1)
+    assert one.graph_bytes == costs.graph_bytes + 256 * MIB
+
+
+def test_request_scratch_can_make_a_previously_fitting_plan_exceed_supply():
+    model = recipe("scratch", 20, (1,))
+    device = (gpu(0, 35.5),)
+    original = planning.fit(model, model.checkpoints[0], device,
+        concurrency=3, reserve_bytes=0, speculation=None)
+    assert original.fits
+    costs = replace(model.ranks[1], request_scratch_bytes=2 * GIB)
+    budgeted = replace(model, ranks=MappingProxyType({1: costs}))
+    prepared = planning.fit(budgeted, budgeted.checkpoints[0], device,
+        concurrency=3, reserve_bytes=0, speculation=None)
+    assert prepared.graph_bytes == 12 * GIB
+    assert not prepared.fits
+
+
+def test_request_scratch_cost_rejects_invalid_units():
+    for value in (-1, True, 1.5):
+        with pytest.raises(ValueError, match="per-request scratch"):
+            replace(SOLO.ranks[1], request_scratch_bytes=value)
+
+
 def test_mla_arithmetic_is_explicit_plan_metadata_without_changing_capacity():
     model = replace(SOLO, mla_compute_modes=("auto", "bf16"))
     options = dict(concurrency=4, reserve_bytes=0, speculation=model.speculation)
