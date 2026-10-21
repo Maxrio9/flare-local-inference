@@ -80,9 +80,9 @@ RECIPE = Recipe(
     stream_overlap=True,
     ranks=MappingProxyType({
         # One rank holds every head: twice TP2's recurrent rows less the replicated part.
-        1: _costs(161_123_584, _GRAPH_BYTES, ranks=1, speculating=True),
-        2: _costs(81_464_576, _GRAPH_BYTES, ranks=2, speculating=True),
-        4: _costs(41_635_072, _GRAPH_BYTES, ranks=4, speculating=True),
+        1: _costs(161_267_200, _GRAPH_BYTES, ranks=1, speculating=True),
+        2: _costs(81_608_192, _GRAPH_BYTES, ranks=2, speculating=True),
+        4: _costs(41_778_688, _GRAPH_BYTES, ranks=4, speculating=True),
     }),
     plain_ranks=MappingProxyType({
         1: _costs(149_230_592, _GRAPH_BYTES, ranks=1, speculating=False),
