@@ -115,6 +115,15 @@ def _validate_geometry(module: torch.nn.Module, world_size=1) -> None:
         raise ValueError("Qwen GDN convolution must not have bias")
 
 
+class _StagedProjection:
+    def __init__(self, operation, output):
+        self.operation, self.output = operation, output
+
+    def __call__(self, source):
+        self.output.copy_(self.operation(source))
+        return self.output
+
+
 class PreparedGDN:
     """One fixed-capacity decode or prefill pipeline over a canonical GDN module.
 
@@ -128,6 +137,9 @@ class PreparedGDN:
     layers and graph buckets. Their storage must cover every selected plan and
     remain live until all referencing graphs drain. Concurrent graph execution
     over either shared workspace is invalid.
+
+    ``projection_buffers`` shares contiguous packed-projection outputs across
+    serialized layers before copying them into the required strided GDN views.
 
     Prefill uses canonical PyTorch gated RMSNorm inside the captured graph.
     Its temporary tensors remain private to that graph; gated and final outputs
@@ -154,6 +166,7 @@ class PreparedGDN:
         in_place: bool = False,
         partitions=None,
         prepare_projections: bool = True,
+        projection_buffers: dict | None = None,
     ) -> None:
         self.world_size = 48 // module.num_v_heads
         self.key_heads, self.value_heads = module.num_k_heads, module.num_v_heads
@@ -251,8 +264,17 @@ class PreparedGDN:
                 return TensorFP8Projection(inputs, weight, output, **options)
             if isinstance(weight, torch.Tensor):
                 return UnquantizedProjection(inputs, weight, output, **options)
-            return QuantizedProjection(inputs, weight, output, activation_mode="auto",
-                                       workspace=projection_workspace, **options)
+            destination = output
+            if projection_buffers is not None and not output.is_contiguous():
+                if key not in projection_buffers:
+                    projection_buffers[key] = torch.empty(output.shape, dtype=output.dtype, device=output.device)
+                destination = projection_buffers[key]
+                if (destination.shape != output.shape or destination.dtype != output.dtype
+                        or destination.device != output.device or not destination.is_contiguous()):
+                    raise ValueError("GDN projection buffer must match its output and have contiguous rows")
+            operation = QuantizedProjection(inputs, weight, destination, activation_mode="auto",
+                                            workspace=projection_workspace, **options)
+            return operation if destination is output else _StagedProjection(operation, output)
 
         if prepare_projections:
             inputs = (("in_proj_qkvz", scratch.projected_qkvz),) if self.fused_qkvz else (

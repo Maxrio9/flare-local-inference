@@ -10,7 +10,7 @@ from ignition.components.gated_delta import GDNScratch, PreparedGDN
 from ignition.components.linear import QuantizedProjection
 from ignition.components.paged_attention import PreparedPagedAttention, PreparedPagedKVWriter
 from ignition.components.recurrent import DeltaMetadata
-from ignition.components.tensor_fp8 import TensorFP8Projection
+from ignition.components.tensor_fp8 import TensorFP8Projection, TensorFP8Weight
 from ignition.components.vocabulary import PreparedVocabularyProjection
 
 from .config import PAGE_TOKENS
@@ -78,12 +78,17 @@ class FullAttention(torch.nn.Module):
         self.key = empty("key", self.kv_heads * self.dim).view(tokens, self.kv_heads, self.dim)
         self.attended, self.output = empty("attended", self.heads * self.dim), empty("output", config.hidden)
         prefix = f"layers.{layer}.self_attn."
-        self.projections = {
-            field: TensorFP8Projection(inputs, weights.projections[prefix + field], output,
-                                       session=session, name=name + "." + field)
-            for field, inputs, output in (("q_proj", source, self.qg), ("k_proj", source, self.k),
-                                         ("v_proj", source, self.v), ("o_proj", self.attended, self.output))
-        }
+        self.projections = {}
+        for field, inputs, output in (("q_proj", source, self.qg), ("k_proj", source, self.k),
+                                     ("v_proj", source, self.v), ("o_proj", self.attended, self.output)):
+            weight = weights.projections[prefix + field]
+            options = dict(session=session, name=name + "." + field)
+            if isinstance(weight, TensorFP8Weight):
+                operation = TensorFP8Projection(inputs, weight, output, **options)
+            else:
+                operation = QuantizedProjection(inputs, weight, output, activation_mode="auto",
+                                                workspace=workspace, **options)
+            self.projections[field] = operation
         self.slots = torch.full((tokens,), -1, dtype=torch.int64, device=device)
         self.lengths = torch.zeros_like(metadata.lengths)
         key_cache, value_cache = pool.attention(layer, config)
@@ -122,6 +127,7 @@ class PreparedDecoder:
         self.delta = DeltaMetadata.allocate(metadata.starts.numel(), scratch.activations.device)
         config, source = weights.config, scratch.activations
         attention_buffers = {}
+        recurrent_projection_buffers = {}
         mlp_buffers = {field: torch.zeros((source.shape[0], width), dtype=source.dtype, device=source.device)
                        for field, width in (("gate_proj", config.text["intermediate_size"]),
                                             ("up_proj", config.text["intermediate_size"]),
@@ -136,7 +142,8 @@ class PreparedDecoder:
                                for field in ("in_proj_qkv", "in_proj_z", "in_proj_ba", "out_proj")}
                 layer.linear_attn = RecurrentAttention(PreparedGDN(original.linear_attn, projections, source,
                     scratch.gdn, pool.recurrent(index), self.delta, mode=mode, session=session,
-                    name=name + "." + prefix + "gdn", workspace=workspace, projection_workspace=workspace))
+                    name=name + "." + prefix + "gdn", workspace=workspace, projection_workspace=workspace,
+                    projection_buffers=recurrent_projection_buffers))
             else:
                 layer.self_attn = FullAttention(original.self_attn, weights, source, metadata, pool, index,
                     mode=mode, session=session, workspace=workspace, name=name + "." + prefix + "attention",
