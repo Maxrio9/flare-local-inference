@@ -87,6 +87,49 @@ operations pack metadata, select committed state and update request records.
 Missing tree or compact-state semantics require a public library contract;
 there is no private eager model fallback.
 
+## Dense Qwen native MTP
+
+The dense Qwen3.8-27B recipe composes the checkpoint's single `mtp.layers.0`
+decoder with the shared target embedding and vocabulary head. Its fifteen
+`mtp.*` tensors remain BF16, including checkpoints whose target projections
+are NVFP4. Loading rejects another layer count, dedicated embeddings, a shape
+mismatch, or a different MTP tensor dtype.
+
+For a committed target position `i`, feedback is
+`fc(cat(norm_embedding(embed(x[i+1])), norm_hidden(h[i])))`, where `h[i]`
+is the target output **after its final norm**. The pair uses rotary position
+`i`. The dense predictor has ordinary gated full attention and a dense MLP;
+the Flash-Next model's four-stream mixer and expert loader do not apply.
+Recursive proposals feed back the predictor's normalized output.
+
+The dense catalog covers verification widths one through eight. Its private
+prefill workspaces cover chunks up to 4096 tokens; longer prompts use multiple
+chunks. Planning charges each admitted request slot for compact GDN records,
+sampling scratch, and round buffers before sizing KV pages.
+
+Prefill absorbs all available teacher-forced pairs. After verification, cache
+repair replaces approximate recursive pairs with pairs from the committed
+target prefix. The separate paged draft cache therefore contains
+`max(consumed_tokens - 1, 0)` pairs. Its page-table view has offset one into
+the request's physical page allocation. A snapshot must retain both private
+draft boundary pages: the preceding logical page can remain private even when
+it is full, because target and draft cursors differ by one. The shared
+state-transfer implementation validates and restores both parts without
+writing shared prefix pages.
+
+Target verification reuses the GDN correction-record/recovery path and the
+ordinary full-attention verification contract. Width one executes ordinary
+GDN decode. Commit selects only the accepted recurrent and convolution
+history, preserves the pending token, and publishes the consumed cursor
+before snapshot. Ordinary and speculative maintenance graphs are separate:
+disabling speculation must not require a draft page allocation.
+
+This composition introduces no native operation family or package schema.
+History-copy and mixed proposals are not advertised by the dense recipe.
+Checkpoint restore, page boundaries, width transitions, output-budget
+clipping, inactive rows, and target width-one parity require qualification
+independently of acceptance rate or throughput.
+
 ## GLM learned proposals and continuation state
 
 The [GLM MTP layer](../ignition/recipes/glm53/mtp.py) loads

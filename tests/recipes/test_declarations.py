@@ -17,6 +17,43 @@ GLM = resolve("glm-5.3-flash")
 COPY = Speculation(3, proposal_source="copy")
 
 
+def test_dense_native_mtp_costs_cover_recovery_records_and_shifted_draft_pages():
+    import torch
+
+    from ignition.components.gdn_recovery import GDNLayerRecords
+    from ignition.components.capacity import speculative_shapes
+    from ignition.components.parallel_draft import prepare_sampling_scratch
+    from ignition.preparation.scratch import GraphBufferPool
+    from ignition.recipes.qwen38_dense.pool import continuation_layout, page_bytes
+
+    recipe = resolve("qwen3.8-27b").recipe
+    config = SimpleNamespace(hidden=5120,
+        layers=tuple("full_attention" if i % 4 == 3 else "linear_attention" for i in range(64)),
+        text={"num_key_value_heads": 4, "head_dim": 256})
+    assert recipe.speculation.learned and not recipe.history_copy
+    ordinary, learned = recipe.costs(1, None), recipe.costs(1, recipe.speculation)
+    assert ordinary.state_row_bytes == continuation_layout(config).row_bytes
+    assert learned.state_row_bytes == continuation_layout(config,
+        speculative_tokens=recipe.max_draft_tokens, draft=True).row_bytes
+    assert ordinary.page_bytes == page_bytes(config)
+    assert learned.page_bytes == page_bytes(config, draft=True)
+    records = GDNLayerRecords.allocate((i for i, kind in enumerate(config.layers)
+        if kind == "linear_attention"), recipe.max_concurrency, "meta", key_heads=16, value_heads=48)
+    record_bytes = sum(t.nbytes for t in (records.delta, records.keys, records.decay))
+    sampling = GraphBufferPool("meta", chunk_bytes=2 << 20)
+    maximum = recipe.max_concurrency * (recipe.max_draft_tokens + 1)
+    for batch, width in speculative_shapes(recipe.max_concurrency,
+            tuple(range(1, recipe.max_draft_tokens + 2)), maximum):
+        buffers = sampling.cursor()
+        buffers.zeros((batch, width - 1, 248320), torch.float32)
+        prepare_sampling_scratch(batch, width, 248320, "meta", buffers=buffers)
+    assert learned.request_scratch_bytes * recipe.max_concurrency >= record_bytes + sampling.nbytes
+    draft_regions = [r for r in continuation_layout(config, draft=True).regions
+                     if r.name.startswith("draft.")]
+    assert len(draft_regions) == 2
+    assert all(r.shape == (2, 128 * 4 * 256) and r.dtype == torch.uint8 for r in draft_regions)
+
+
 @pytest.mark.parametrize("world_size", [1, 2, 4])
 def test_qwen_state_rows_and_pages_match_the_prepared_layouts(world_size):
     import torch
@@ -87,11 +124,16 @@ def test_fp8_cache_views_and_planned_bytes(alias, world_size, drafting):
             speculative_tokens=model.recipe.speculation.draft_tokens if drafting else 0)
         caches = [pool.attention(layer) for layer, kind in enumerate(config.layers) if kind == "mla"]
     else:
-        pool = module.ContinuationPool.for_model(config, 2, 3, "meta")
+        options = (dict(draft=drafting,
+            speculative_tokens=model.recipe.max_draft_tokens if drafting else 0)
+            if model.recipe.name == "qwen38_dense" else {})
+        pool = module.ContinuationPool.for_model(config, 2, 3, "meta", **options)
         caches = [cache for layer, kind in enumerate(config.layers) if kind in ("attention", "full_attention")
                   for cache in pool.attention(layer, config)]
     draft_caches = [pool.reserved_region(region.name) for region in pool.layout.regions
                     if region.name.startswith("draft") and region.name.endswith((".key", ".value"))]
+    if model.recipe.name == "qwen38_dense":
+        draft_caches = list(pool.draft_attention(config)) if drafting else []
     if model.recipe.name == "kimi3":
         assert len(draft_caches) == (2 * config.draft.layers if drafting else 0)
         assert all(cache.dtype == torch.bfloat16 for cache in draft_caches)

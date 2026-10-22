@@ -26,11 +26,12 @@ class PreparedMaintenance:
         capacity,
         admission_buffers,
         draft_state=True,
+        draft_tables=None,
         page_tokens=PAGE_TOKENS,
         buffers=None,
     ):
         self.pool, self.commands, self.inputs, self.requests = pool, commands, inputs, requests
-        self.page_tokens = page_tokens
+        self.page_tokens, self.draft_tables = page_tokens, draft_tables
         self.excluded_regions = (
             () if draft_state else tuple(r.name for r in pool.layout.regions if r.name.startswith("draft"))
         )
@@ -77,6 +78,8 @@ class PreparedMaintenance:
             state_rows=self.inputs.request_state_rows,
             requests=self.requests,
             excluded_regions=self.excluded_regions,
+            trailing_pages=() if self.draft_tables is None else self.pool.draft_pages(),
+            trailing_tables=self.draft_tables,
         )
 
     def __call__(self):

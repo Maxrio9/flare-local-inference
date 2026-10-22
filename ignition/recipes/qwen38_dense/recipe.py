@@ -2,16 +2,27 @@
 
 from types import MappingProxyType
 
-from ignition.recipes.declaration import Checkpoint, RankCosts, RankUsage, Recipe, SamplingDefaults, SamplingRange
+from ignition.recipes.declaration import Checkpoint, RankCosts, RankUsage, Recipe, SamplingDefaults, SamplingRange, Speculation
+
+
+# Fixed private absorption buffers cover every 4096-token prefill capacity,
+# including scored-prefill variants. Per-slot scratch covers the GDN records,
+# retained distributions and round-local MTP work through width eight. The bound
+# includes chunk fragmentation at the maximum 64-request catalog.
+_MTP_PREFILL_BYTES = (18816 + 6784) * (6 * 5120 + 3 * 1024) * 2
+_MTP_REQUEST_BYTES = 128 << 20
 
 
 def prepare(snapshot, plan, *, compile_forwards, kernel_cache, progress, retain_graphs=False,
             package_storage=None, ranks=None):
     from .bootstrap import PreparationConfig, prepare as prepare_model
 
-    if plan.world_size != 1 or ranks is not None or plan.speculation is not None:
-        raise ValueError("Qwen dense preparation supports one local GPU and ordinary text generation")
-    config = PreparationConfig(prompt_logprobs=plan.prompt_logprobs,
+    if plan.world_size != 1 or ranks is not None:
+        raise ValueError("Qwen dense preparation supports one local GPU")
+    speculation = plan.speculation
+    drafting = {} if speculation is None else dict(mtp=True, speculative_widths=speculation.widths,
+        speculative_fixed_width=speculation.fixed_width, speculative_token_capacity=plan.speculative_token_capacity, speculative_proposal_source=speculation.proposal_source, history_drafts=speculation.history_drafts)
+    config = PreparationConfig(**drafting,prompt_logprobs=plan.prompt_logprobs,
         compile_workers=plan.compile_workers, tuning_replica=plan.tuning_replica,
         max_active=plan.concurrency, context=plan.recipe.context,
         prefill_chunk_size=plan.prefill_chunk,
@@ -34,7 +45,12 @@ RECIPE = Recipe(
                 "presence_penalty": SamplingRange(0., 2.)}),
     checkpoints=(Checkpoint(alias="qwen3.8-27b", repository="nvidia/Qwen3.8-27B-NVFP4",
         revision="482ca0f3832238542f8f5295dde86b5f22711d80", architecture="Qwen3_5ForConditionalGeneration",
-        stored_bytes=21_921_428_072, device_bytes=20_150_569_096, expansion_bytes=307_871_744),),
+        stored_bytes=21_921_428_072, device_bytes=20_150_569_096 + 849_398_784, draft_bytes=849_398_784, expansion_bytes=307_871_744),),
     context=262144, page_tokens=128, concurrency=4, max_concurrency=64, prefill_chunk=4096,
-    max_draft_tokens=0, ranks=MappingProxyType({1: RankCosts(158_148_864, 4_194_304, 4 << 30)}),
+    speculation=Speculation(draft_tokens=3),
+    max_draft_tokens=7, verification_rows=0,
+    plain_ranks=MappingProxyType({1: RankCosts(158_148_864, 4_194_304, 4 << 30)}),
+    ranks=MappingProxyType({1: RankCosts(158_148_864 + 7 * 983_040 + 2 * 262_144,
+        4_194_304 + 262_144, (4 << 30) + _MTP_PREFILL_BYTES, draft_page_bytes=262_144,
+        request_scratch_bytes=_MTP_REQUEST_BYTES)}),
 )

@@ -127,6 +127,34 @@ def test_dense_qwen_preserves_device_decode_and_page_storage_in_typed_contract()
         assert region.storage.stride == region.storage.nbytes == 128 * 4 * 256 * 2
 
 
+def test_dense_qwen_speculation_declares_shifted_pages_and_committed_cursor():
+    import torch
+    from ignition.components.paged_batch import BatchInputs
+    from ignition.components.state import StateLayout
+    from ignition.recipes.qwen38_dense.contract import prepare
+
+    inputs = BatchInputs.allocate(128, 4, "cpu", capacity=1)
+    buffers = dict(inputs.buffers(), draft_page_tables=torch.full((1, 4), -1, dtype=torch.int32))
+    layout = StateLayout.from_specs((("last_hidden", (5120,), torch.bfloat16),
+                                    ("consumed_tokens", (1,), torch.int64)))
+    pool = SimpleNamespace(layout=layout, pages={})
+    signatures = {"speculative1w2": GraphSignature("speculative", 1, 2,
+        (*inputs.buffers(), "draft_page_tables"), speculation_enabled=True)}
+    value = ParseDict(prepare(signatures, buffers, pool, vocabulary=248320), p.ModelContract())
+    assert [(t.buffer, t.page_offset) for t in value.cache.page_tables] == [
+        ("page_tables", 0), ("draft_page_tables", 1)]
+    graph, = value.graphs
+    assert graph.pending_token.buffer == "request_pending_token"
+    assert all(binding.source != p.PENDING_TOKEN for binding in graph.inputs)
+    assert any(binding.buffer == "draft_page_tables" and binding.source == p.PAGE_TABLE
+               for binding in graph.inputs)
+    assert graph.draft_cursor.lag_tokens == 1
+    assert graph.draft_cursor.state.buffer == "state_pool"
+    assert graph.draft_cursor.state.offset == layout.region("consumed_tokens").offset
+    assert graph.draft_cursor.state.stride == layout.row_bytes
+    assert graph.draft_cursor.state.nbytes == 8
+
+
 def test_prompt_scoring_is_an_additive_catalog_and_serialization_contract():
     from ignition.components.prompt_logprobs import prefill_graph_count, prefill_modes, scored_prefill_capacities
     from ignition.components.capacity import prefill_capacities

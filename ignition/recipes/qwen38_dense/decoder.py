@@ -4,12 +4,14 @@ from copy import copy
 from dataclasses import dataclass
 
 import torch
+import triton
 
 from ignition.components.embedding import PreparedEmbedding
 from ignition.components.gated_delta import GDNScratch, PreparedGDN
-from ignition.components.linear import QuantizedProjection
+from ignition.components.linear import QuantizedProjection, UnquantizedProjection
 from ignition.components.paged_attention import PreparedPagedAttention, PreparedPagedKVWriter
-from ignition.components.recurrent import DeltaMetadata
+from ignition.components.recurrent import DeltaMetadata, _commit_convolution
+from ignition.components.gdn_recovery import PreparedGDNCommit
 from ignition.components.tensor_fp8 import TensorFP8Projection, TensorFP8Weight
 from ignition.components.vocabulary import PreparedVocabularyProjection
 
@@ -59,7 +61,7 @@ class RecurrentAttention(torch.nn.Module):
 
 
 class FullAttention(torch.nn.Module):
-    def __init__(self, module, weights, source, metadata, pool, layer, *, mode, session, workspace, name, buffers):
+    def __init__(self, module, weights, source, metadata, pool, layer, *, mode, session, workspace, name, buffers, cache_only=False):
         super().__init__()
         self.canonical, self.metadata = module, metadata
         config = weights.config
@@ -72,19 +74,25 @@ class FullAttention(torch.nn.Module):
                 buffers[field] = torch.zeros((tokens, width), dtype=torch.bfloat16, device=device)
             return buffers[field]
 
-        self.qg = empty("qg", 2 * self.heads * self.dim)
+        if not cache_only:
+            self.qg = empty("qg", 2 * self.heads * self.dim)
         self.k, self.v = (empty(field, self.kv_heads * self.dim) for field in ("k", "v"))
-        self.q = empty("q", self.heads * self.dim).view(tokens, self.heads, self.dim)
+        if not cache_only:
+            self.q = empty("q", self.heads * self.dim).view(tokens, self.heads, self.dim)
         self.key = empty("key", self.kv_heads * self.dim).view(tokens, self.kv_heads, self.dim)
-        self.attended, self.output = empty("attended", self.heads * self.dim), empty("output", config.hidden)
+        outputs = [("k_proj", source, self.k), ("v_proj", source, self.v)]
+        if not cache_only:
+            self.attended, self.output = empty("attended", self.heads * self.dim), empty("output", config.hidden)
+            outputs = [("q_proj", source, self.qg), *outputs, ("o_proj", self.attended, self.output)]
         prefix = f"layers.{layer}.self_attn."
         self.projections = {}
-        for field, inputs, output in (("q_proj", source, self.qg), ("k_proj", source, self.k),
-                                     ("v_proj", source, self.v), ("o_proj", self.attended, self.output)):
+        for field, inputs, output in outputs:
             weight = weights.projections[prefix + field]
             options = dict(session=session, name=name + "." + field)
             if isinstance(weight, TensorFP8Weight):
                 operation = TensorFP8Projection(inputs, weight, output, buffers=buffers, **options)
+            elif isinstance(weight, torch.Tensor):
+                operation = UnquantizedProjection(inputs, weight, output, **options)
             else:
                 operation = QuantizedProjection(inputs, weight, output, activation_mode="auto",
                                                 workspace=workspace, **options)
@@ -94,25 +102,34 @@ class FullAttention(torch.nn.Module):
         key_cache, value_cache = pool.attention(layer, config)
         self.writer = PreparedPagedKVWriter(self.key, self.v.view(tokens, self.kv_heads, self.dim),
             key_cache, value_cache, self.slots, session=session, name=name + ".write")
-        self.attention = PreparedPagedAttention(self.q, key_cache, value_cache, metadata.page_table,
-            self.lengths, metadata.query_start_loc, self.attended.view(tokens, self.heads, self.dim),
-            mode=mode, session=session, workspace=workspace, name=name + ".attention")
+        if not cache_only:
+            self.attention = PreparedPagedAttention(self.q, key_cache, value_cache, metadata.page_table,
+                self.lengths, metadata.query_start_loc, self.attended.view(tokens, self.heads, self.dim),
+                mode=mode, width=metadata.max_query_tokens, session=session, workspace=workspace, name=name + ".attention")
 
-    def forward(self, hidden_states, position_embeddings, **kwargs):
+    def forward(self, hidden_states, position_embeddings, *, cache_only=False, **kwargs):
         from transformers.models.qwen3_5.modeling_qwen3_5 import apply_rotary_pos_emb
 
-        for field in ("q_proj", "k_proj", "v_proj"):
+        for field in (("k_proj", "v_proj") if cache_only else ("q_proj", "k_proj", "v_proj")):
             self.projections[field](hidden_states)
-        query, gate = self.qg.view(-1, self.heads, 2 * self.dim).chunk(2, dim=-1)
-        q, k = apply_rotary_pos_emb(self.canonical.q_norm(query),
-            self.canonical.k_norm(self.k.view(-1, self.kv_heads, self.dim)), *position_embeddings)
-        self.q.copy_(q)
+        if cache_only:
+            # The canonical rotary operation treats Q and K independently. There
+            # is no query projection or attention output in target-derived repair.
+            key = self.canonical.k_norm(self.k.view(-1, self.kv_heads, self.dim))
+            _, k = apply_rotary_pos_emb(key, key, *position_embeddings)
+        else:
+            query, gate = self.qg.view(-1, self.heads, 2 * self.dim).chunk(2, dim=-1)
+            q, k = apply_rotary_pos_emb(self.canonical.q_norm(query),
+                self.canonical.k_norm(self.k.view(-1, self.kv_heads, self.dim)), *position_embeddings)
+            self.q.copy_(q)
         self.key.copy_(k)
         m = self.metadata
         page = m.token_page_table.gather(1, (m.positions.clamp(min=0) // PAGE_TOKENS)[:, None]).squeeze(1)
         self.slots.copy_(torch.where(m.positions >= 0, page.long() * PAGE_TOKENS + m.positions % PAGE_TOKENS, -1))
         self.lengths.copy_(torch.where(m.lengths > 0, m.starts + m.lengths, 0))
         self.writer()
+        if cache_only:
+            return None
         self.attention()
         self.attended.mul_(gate.reshape_as(self.attended).sigmoid())
         return self.projections["o_proj"](self.attended), None
@@ -120,11 +137,17 @@ class FullAttention(torch.nn.Module):
 
 class PreparedDecoder:
     def __init__(self, weights, scratch, metadata, pool, *, mode, vocabulary_runtime,
-                 coordinator, session, name, workspace, scoring=None):
+                 coordinator, session, name, workspace, scoring=None, records=None, verification_columns=1, retain_feedback=False):
         self.weights, self.scratch, self.metadata, self.pool = weights, scratch, metadata, pool
         self.embedding = PreparedEmbedding(weights.tree.embed_tokens.weight, metadata.token_ids,
             scratch.activations, num_rows=metadata.live_counts[:1], session=session, name=name + ".embedding")
-        self.delta = DeltaMetadata.allocate(metadata.starts.numel(), scratch.activations.device)
+        self.delta = DeltaMetadata.allocate(metadata.starts.numel(), scratch.activations.device,
+            verification_columns=verification_columns)
+        self.mode, self.records = mode, records
+        self.auxiliary = torch.zeros_like(scratch.activations) if retain_feedback else None
+        self.convolution_offsets = torch.tensor([pool.layout.region(f"layer{i}.convolution").offset // 2
+            for i, kind in enumerate(weights.config.layers) if kind == "linear_attention"],
+            dtype=torch.int64, device=scratch.activations.device)
         config, source = weights.config, scratch.activations
         attention_buffers = {}
         recurrent_projection_buffers = {}
@@ -141,7 +164,8 @@ class PreparedDecoder:
                 projections = {field: weights.projections[prefix + "linear_attn." + field]
                                for field in ("in_proj_qkv", "in_proj_z", "in_proj_ba", "out_proj")}
                 layer.linear_attn = RecurrentAttention(PreparedGDN(original.linear_attn, projections, source,
-                    scratch.gdn, pool.recurrent(index), self.delta, mode=mode, session=session,
+                    scratch.gdn, pool.recurrent(index), self.delta, mode="decode" if mode == "verify" else mode,
+                    records=None if records is None else records[index], session=session,
                     name=name + "." + prefix + "gdn", workspace=workspace, projection_workspace=workspace,
                     projection_buffers=recurrent_projection_buffers))
             else:
@@ -166,6 +190,19 @@ class PreparedDecoder:
         self.head = PreparedVocabularyProjection(scratch.hidden, weights.head, scratch.logits, scratch.logits,
             runtime=vocabulary_runtime, coordinator=coordinator, session=session, name=name + ".head", activation_mode="auto")
 
+    def prepare_commit(self, counts):
+        self.commit_recurrence = PreparedGDNCommit(self.pool.reserved_backing,
+            {i: self.pool.recurrent(i).recurrent for i in self.records.layers}, self.records,
+            self.delta, counts, key_heads=16, value_heads=48)
+
+    def commit(self, counts):
+        self.commit_recurrence()
+        shape = self.pool.layout.region(f"layer{self.records.layers[0]}.convolution").shape
+        torch.library.wrap_triton(_commit_convolution)[
+            (len(self.records.layers), counts.numel(), triton.cdiv(shape[0], 128))](
+            self.pool.reserved_backing.view(torch.bfloat16), self.convolution_offsets,
+            self.metadata.state_rows, counts, self.pool.layout.row_bytes // 2, *shape, 128)
+
     def __call__(self):
         m, d = self.metadata, self.delta
         active = m.lengths > 0
@@ -183,6 +220,8 @@ class PreparedDecoder:
         hidden = self.embedding()
         for layer in self.layers:
             hidden = layer(hidden, position_embeddings=position_embeddings)
+        if self.auxiliary is not None:
+            self.auxiliary.copy_(self.weights.tree.norm(hidden))
         if self.scoring is not None:
             self.scoring.source.copy_(self.weights.tree.norm(hidden))
             self.scoring()

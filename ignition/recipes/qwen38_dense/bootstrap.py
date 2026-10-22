@@ -13,7 +13,8 @@ from ignition.components.prompt_logprobs import (
     PreparedScoredPrefill, PromptScoring, prefill_graph_count, prefill_modes,
 )
 
-from ignition.components.capacity import batch_capacities, prefill_capacities, request_capacity
+from ignition.components.capacity import (batch_capacities, prefill_capacities, request_capacity,
+    speculative_shapes, speculative_token_capacity)
 from ignition.components.paged_batch import BatchInputs, Metadata, PreparedBatch
 from ignition.components.paged_generation import PreparedGeneration
 from ignition.components.paged_maintenance import PreparedMaintenance
@@ -42,6 +43,12 @@ from .weights import ModelWeights
 
 @dataclass(frozen=True)
 class PreparationConfig:
+    history_drafts: bool = False
+    mtp: bool = False
+    speculative_widths: tuple[int, ...] = (1, 2, 3, 4)
+    speculative_fixed_width: int | None = None
+    speculative_token_capacity: int | None = None
+    speculative_proposal_source: str = "mtp"
     prompt_logprobs: bool = False
     compile_workers: int | None = None
     tuning_replica: TuningReplica | None = None
@@ -57,10 +64,23 @@ class PreparationConfig:
 
     def __post_init__(self):
         request_capacity(self.max_active)
+        if self.speculative_proposal_source != "mtp":
+            raise ValueError("dense speculative decoding requires the native MTP proposal source")
+        if self.history_drafts:
+            raise ValueError("dense learned proposals do not yet combine history drafts")
+        if self.speculative_fixed_width is not None and self.speculative_fixed_width not in self.speculative_widths:
+            raise ValueError("fixed width must belong to the prepared widths")
+        if (not self.speculative_widths or self.speculative_widths[0] != 1
+                or tuple(sorted(set(self.speculative_widths))) != self.speculative_widths
+                or self.speculative_widths[-1] > 8):
+            raise ValueError("speculative widths must be increasing, include one and fit eight columns")
         if not PAGE_TOKENS <= self.context <= 262144 or self.context % PAGE_TOKENS:
             raise ValueError("Qwen dense context must be 128-aligned in [128,262144]")
         if not 128 <= self.prefill_chunk_size <= self.context or self.prefill_chunk_size % 128:
             raise ValueError("Qwen dense prefill chunk must be 128-aligned and fit the context")
+        if self.mtp and self.speculative_proposal_source == "mtp" and self.prefill_chunk_size > 4096:
+            raise ValueError("dense MTP prefill chunks must fit the budgeted 4096-token workspace")
+        speculative_shapes(self.max_active, self.speculative_widths, self.speculative_token_capacity)
         if self.snapshot_budget_bytes <= 0 or self.headroom_bytes < 0:
             raise ValueError("snapshot budget must be positive and headroom nonnegative")
 
@@ -78,7 +98,13 @@ def prepare(snapshot, config, *, progress=None, package_storage):
     transient.enter_context(package_storage.transient())
     weights = ModelWeights.load(manifest, device, progress=progress)
     release_unused()
-    layout = continuation_layout(weights.config)
+    drafts = max(config.speculative_widths) - 1 if config.mtp else 0
+    learned = config.mtp
+    draft_weights = None
+    if learned:
+        from .mtp_weights import MTPWeights
+        draft_weights = MTPWeights.load(manifest, weights.config, device, progress=progress)
+    layout = continuation_layout(weights.config, speculative_tokens=drafts, draft=learned)
     snapshots = layout.snapshot_capacity(config.snapshot_budget_bytes)
     if snapshots < 1:
         raise ValueError("snapshot budget must hold a complete Qwen dense continuation")
@@ -88,7 +114,8 @@ def prepare(snapshot, config, *, progress=None, package_storage):
     total_memory = torch.cuda.mem_get_info(device)[1]
     with phase(progress, "Allocate model state"):
         pool = ContinuationPool.for_model(weights.config, state_rows + 1, pages, device,
-            storage=package_storage, maximum_pages=total_memory // page_bytes(weights.config),
+            speculative_tokens=drafts, draft=learned,
+            storage=package_storage, maximum_pages=total_memory // page_bytes(weights.config, draft=learned),
             maximum_rows=total_memory // layout.row_bytes, backed_slots=min(state_rows + 1, 1 + 2 * slots))
         vocabulary = weights.config.vocabulary
         requests = DeviceRequestState.allocate(device, vocab_size=vocabulary, capacity=slots)
@@ -97,7 +124,7 @@ def prepare(snapshot, config, *, progress=None, package_storage):
         commands = StateCommands.allocate(device, capacity=slots)
         frame = torch.zeros(1, dtype=torch.int32, device=device)
         sequence = torch.zeros(1, dtype=torch.int64, device=device)
-        completion = CompletionOutputs.allocate((2, slots, 8), device=device)
+        completion = CompletionOutputs.allocate((2, slots, 24 if config.mtp else 8), device=device)
         coordinator = None
         identity = hashlib.sha256(json.dumps({
             "config": weights.config.text, "headers": [s.header_sha256 for s in manifest.shards],
@@ -113,7 +140,8 @@ def prepare(snapshot, config, *, progress=None, package_storage):
         arena = ScratchArena(device)
         session.register_scratch(arena)
         prefill_storage = Scratch.allocate(config.prefill_chunk_size, 1, weights.config, device)
-        decode_storage = Scratch.allocate(slots, slots, weights.config, device)
+        decode_tokens = max((b * w for b, w in speculative_shapes(config.max_active, config.speculative_widths, config.speculative_token_capacity)), default=slots) if config.mtp else slots
+        decode_storage = Scratch.allocate(decode_tokens, decode_tokens, weights.config, device)
         buffers = dict(inputs.buffers(), **commands.buffers(),
             **{name: getattr(admission, name) for name in admission.__dataclass_fields__},
             state_pool=pool.backing, memory_capacity=pool.memory_capacity,
@@ -122,15 +150,28 @@ def prepare(snapshot, config, *, progress=None, package_storage):
             submission_sequence=sequence, **completion.buffers())
     scoring = PromptScoring.allocate(config, device, buffers, frame=frame)
     forwards, signatures, metadata = {}, {}, {}
+    absorptions = []
     prefill_sizes, batch_sizes = prefill_capacities(config.prefill_chunk_size), batch_capacities(config.max_active)
+    speculation = None
+    if config.mtp:
+        from .speculative import SpeculativePreparation
+        speculation = SpeculativePreparation(weights, pool, requests, inputs, decode_storage,
+            completion, frame, sequence, width=drafts + 1, session=session, workspace=arena, draft_weights=draft_weights)
+        if learned:
+            buffers["draft_page_tables"] = speculation.draft_tables
     count = prefill_graph_count(prefill_sizes, scoring) + 5 * len(batch_sizes)
+    if config.mtp:
+        count += (prefill_graph_count(prefill_sizes, scoring) + 4 * len(batch_sizes)
+                  + len(speculative_shapes(config.max_active, config.speculative_widths, config.speculative_token_capacity)))
     with phase(progress, "Construct graph catalog", total=count) as stage:
-        def add(name, forward, kind, rows, tokens, fields):
+        def add(name, forward, kind, rows, tokens, fields, *, enabled=False):
             if kind == "scored_prefill":
                 forward = PreparedScoredPrefill(forward, requests, inputs)
                 fields = (*fields, "prompt_target_tokens")
             forwards[name] = forward
-            signatures[name] = GraphSignature(kind, rows, tokens, tuple(fields), speculation_enabled=False)
+            signatures[name] = GraphSignature(kind, rows, tokens,
+                (*tuple(fields), *(("draft_page_tables",) if learned and enabled else ())),
+                speculation_enabled=enabled)
             stage.update(advance=1)
 
         for kind, mode, sizes in prefill_modes(prefill_sizes, reversed(batch_sizes), scoring):
@@ -161,6 +202,43 @@ def prepare(snapshot, config, *, progress=None, package_storage):
                     admission_buffers=admission, draft_state=False)
                 fields = row_inputs if mode == "snapshot" else ("request_state_rows", *admission.__dataclass_fields__)
                 add(name, forward, mode, capacity, 1, (*fields, "page_tables", *commands.buffers()))
+        if speculation is not None:
+            for name in tuple(forwards):
+                signature = signatures[name]
+                if signature.kind in ("prefill", "scored_prefill", "resume"):
+                    from dataclasses import replace
+                    forward = forwards[name]
+                    if learned and signature.kind in ("prefill", "scored_prefill"):
+                        from .mtp import PrefillAbsorption
+                        generation = forward.forward if signature.kind == "scored_prefill" else forward
+                        absorption = PrefillAbsorption(speculation, generation.decoder, name)
+                        absorptions.append(absorption)
+                        forward = PreparedGeneration(absorption,
+                            generation.batch, completion, frame, sequence, runtime=None,
+                            coordinator=coordinator, session=session, name=name + ".spec_generation", workspace=arena)
+                        if signature.kind == "scored_prefill":
+                            forward = PreparedScoredPrefill(forward, requests, inputs)
+                    forwards[name + "-spec"] = forward
+                    signatures[name + "-spec"] = replace(signature, speculation_enabled=True,
+                        inputs=(*signature.inputs, *(("draft_page_tables",) if learned else ())))
+                    stage.update(advance=1)
+            for batch in reversed(batch_sizes):
+                for mode in ("init", "restore", "snapshot"):
+                    name = f"{mode}{batch}-spec"
+                    forward = PreparedMaintenance(mode, requests, pool, commands, inputs, completion, frame, sequence,
+                        runtime=None, coordinator=coordinator, session=session, name=name, capacity=batch,
+                        admission_buffers=admission, draft_state=learned,
+                        draft_tables=speculation.draft_tables if learned else None)
+                    fields = row_inputs if mode == "snapshot" else ("request_state_rows", *admission.__dataclass_fields__)
+                    add(name, forward, mode, batch, 1, (*fields, "page_tables", *commands.buffers()), enabled=True)
+            for batch, width in speculative_shapes(config.max_active, config.speculative_widths, config.speculative_token_capacity):
+                name = f"speculative{batch}w{width}"
+                forward = speculation.round(batch, width, name)
+                forward.prepare()
+                forwards[name] = forward
+                signatures[name] = GraphSignature("speculative", batch, width,
+                    (*inputs.buffers(), *(("draft_page_tables",) if learned else ()), "sampling_grammar_mask"), speculation_enabled=True)
+                stage.update(advance=1)
     with phase(progress, "Prepare and tune kernels") as stage, transient:
         tuning = session.tune(show_progress=progress is not None, console=stage.console)
     stream, graph_pool = torch.cuda.Stream(device=device), package_storage.graph_pool.id
@@ -168,7 +246,7 @@ def prepare(snapshot, config, *, progress=None, package_storage):
         stream=stream, pool=graph_pool, collective=None, coordinator=coordinator,
         compile_decoder=config.compile_decoder, progress=progress, cache_root=config.kernel_cache,
         retain_graphs=config.retain_graphs, materialize=pool.clear_for_preparation, warmup_storage=package_storage,
-        compile_kinds=("prefill", "scored_prefill", "decode", "resume"))
+        compile_kinds=("prefill", "scored_prefill", "decode", "resume", "speculative"))
     session.freeze()
     pool.clear_for_preparation()
     torch.cuda.synchronize(device)
@@ -188,21 +266,34 @@ def prepare(snapshot, config, *, progress=None, package_storage):
         page_tokens=PAGE_TOKENS, frontend=prepare_frontend(snapshot, eos_token_ids=eos_ids),
         sampling_defaults=RECIPE.sampling_defaults.as_dict(), assets=assets,
         model_contract=prepare_contract(signatures, buffers, pool, vocabulary=vocabulary))
+    if speculation is not None:
+        server_config.update(speculative_widths=config.speculative_widths,
+            speculative_token_capacity=speculative_token_capacity(config.max_active, max(config.speculative_widths), config.speculative_token_capacity),
+            speculative_fixed_width=config.speculative_fixed_width,
+            speculative_proposal_source=config.speculative_proposal_source, history_drafts=config.history_drafts)
     free, total = torch.cuda.mem_get_info(device)
-    memory = dict(rank=0, world_size=1, device=config.device, weights_bytes=weights.allocated_bytes,
+    memory = dict(rank=0, world_size=1, device=config.device, weights_bytes=weights.allocated_bytes + (0 if draft_weights is None else draft_weights.allocated_bytes),
         mapped_host_bytes=0, offloaded_bytes=0, continuation_bytes=pool.backing.nbytes, state_rows=state_rows,
         preparation_state_rows=int(pool.memory_capacity[0].item()),
         preparation_state_bytes=int(pool.memory_capacity[0].item()) * layout.row_bytes,
-        pages=pages, page_bytes=page_bytes(weights.config), page_tokens=PAGE_TOKENS,
-        kv_bytes=pages * page_bytes(weights.config), completion_output_bytes=completion.nbytes, operator_scratch_bytes=arena.nbytes, graphs=len(graphs),
+        pages=pages, page_bytes=page_bytes(weights.config, draft=learned), page_tokens=PAGE_TOKENS,
+        kv_bytes=pages * page_bytes(weights.config, draft=learned), completion_output_bytes=completion.nbytes, operator_scratch_bytes=arena.nbytes, graphs=len(graphs),
         prefill_capacities=prefill_sizes, free_device_bytes=free, total_device_bytes=total,
         headroom_bytes=config.headroom_bytes, tuning=tuning, compiled_decoder=config.compile_decoder)
+    if speculation is not None:
+        memory.update(speculative_sampling_scratch_bytes=speculation.storage.nbytes,
+            mtp_prefill_scratch_bytes=sum(a.scratch_bytes for a in absorptions),
+            gdn_verification_record_bytes=sum(t.nbytes for t in
+                (speculation.records.delta, speculation.records.keys, speculation.records.decay)))
     if scoring is not None:
         memory.update(scoring.memory_report())
-    return PreparedModel(rebuild_weights={"weights": weights}, device=config.device, graphs=graphs, buffers=buffers, signatures=signatures,
+    return PreparedModel(forwards={name: compiled.get(name, forward) for name, forward in forwards.items()},
+        rebuild_weights={"weights": weights, **({"mtp": draft_weights} if learned else {})}, device=config.device, graphs=graphs, buffers=buffers, signatures=signatures,
         max_active=config.max_active, session=session, server_config=server_config, memory_report=memory,
         close_resources=(() if scoring is None else (scoring,)),
         export_zero_ranges=(*(() if scoring is None else scoring.zero_ranges()),
-                           *storage_ranges([prefill_storage, decode_storage, arena.tensor, metadata]), *completion.zero_ranges()),
+                           *storage_ranges([prefill_storage, decode_storage, arena.tensor, metadata,
+                               *((speculation.storage,) if speculation is not None else ())]),
+                           *completion.zero_ranges()),
         resources=(scoring, weights, pool, requests, inputs, admission, commands, arena, forwards, prefill_storage,
-                   decode_storage, metadata, compiled, stream, graph_pool, session, coordinator))
+                   decode_storage, metadata, compiled, stream, graph_pool, session, coordinator, speculation))
