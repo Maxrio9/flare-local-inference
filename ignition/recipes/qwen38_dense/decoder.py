@@ -84,7 +84,7 @@ class FullAttention(torch.nn.Module):
             weight = weights.projections[prefix + field]
             options = dict(session=session, name=name + "." + field)
             if isinstance(weight, TensorFP8Weight):
-                operation = TensorFP8Projection(inputs, weight, output, **options)
+                operation = TensorFP8Projection(inputs, weight, output, buffers=buffers, **options)
             else:
                 operation = QuantizedProjection(inputs, weight, output, activation_mode="auto",
                                                 workspace=workspace, **options)

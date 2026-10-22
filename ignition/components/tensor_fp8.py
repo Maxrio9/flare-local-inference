@@ -17,7 +17,7 @@ class TensorFP8Weight:
 
 
 class TensorFP8Projection:
-    def __init__(self, source, weight, output, *, session, name):
+    def __init__(self, source, weight, output, *, session, name, buffers=None):
         if (source.ndim != 2 or source.dtype != torch.bfloat16
                 or source.shape[1] != weight.packed.in_features
                 or output.shape != (source.shape[0], weight.packed.out_features)
@@ -27,7 +27,18 @@ class TensorFP8Projection:
         for tensor in (weight.packed.values, weight.packed.scale_mma, weight.packed.block_scale,
                        weight.packed.output_scale, weight.input_scale):
             record_numeric_tensor(tensor)
-        self.quantized = torch.empty_like(source, dtype=torch.float8_e4m3fn)
+        if buffers is None:
+            self.quantized = torch.empty_like(source, dtype=torch.float8_e4m3fn)
+        else:
+            # Caller-owned storage may be shared only by serialized projections.
+            # Each invocation still applies its own checkpoint activation scale.
+            key = ("tensor_fp8_input", tuple(source.shape), source.device)
+            if key not in buffers:
+                buffers[key] = torch.empty(source.shape, dtype=torch.float8_e4m3fn, device=source.device)
+            self.quantized = buffers[key]
+            if (self.quantized.shape != source.shape or self.quantized.dtype != torch.float8_e4m3fn
+                    or self.quantized.device != source.device or not self.quantized.is_contiguous()):
+                raise ValueError("tensor-FP8 input buffer must match the source geometry and have contiguous rows")
         self.plan = blockscaled.plan(blockscaled.query_from_call(self.quantized, weight.packed))
 
         def prepare(state):

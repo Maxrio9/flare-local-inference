@@ -261,7 +261,7 @@ class PreparedGDN:
             weight = projections[key]
             options = dict(session=session, name=f"{name}.{key}")
             if isinstance(weight, TensorFP8Weight):
-                return TensorFP8Projection(inputs, weight, output, **options)
+                return TensorFP8Projection(inputs, weight, output, buffers=projection_buffers, **options)
             if isinstance(weight, torch.Tensor):
                 return UnquantizedProjection(inputs, weight, output, **options)
             destination = output
