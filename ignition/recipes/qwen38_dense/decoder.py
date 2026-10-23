@@ -24,16 +24,35 @@ class Scratch:
     hidden: torch.Tensor
     logits: torch.Tensor
     gdn: GDNScratch
+    mlp_gate: torch.Tensor
+    mlp_up: torch.Tensor
+    mlp_down: torch.Tensor
+    mlp_input: torch.Tensor
+    attention: dict[str, torch.Tensor]
+    quantized: dict[int, torch.Tensor]
 
     @classmethod
     def allocate(cls, tokens, rows, config, device):
+        heads = config.text["num_attention_heads"] * config.text["head_dim"]
+        kv = config.text["num_key_value_heads"] * config.text["head_dim"]
+        attention = dict(qg=2 * heads, k=kv, v=kv, q=heads, key=kv, attended=heads, output=config.hidden)
         return cls(torch.zeros((tokens, config.hidden), dtype=torch.bfloat16, device=device),
                    torch.zeros((rows, config.hidden), dtype=torch.bfloat16, device=device),
                    torch.zeros((rows, config.vocabulary), dtype=torch.bfloat16, device=device),
-                   GDNScratch.allocate(tokens, device, hidden_size=config.hidden))
+                   GDNScratch.allocate(tokens, device, hidden_size=config.hidden),
+                   *(torch.zeros((tokens, width), dtype=torch.bfloat16, device=device)
+                     for width in (config.text["intermediate_size"], config.text["intermediate_size"],
+                                   config.hidden, config.text["intermediate_size"])),
+                   {key: torch.zeros((tokens, width), dtype=torch.bfloat16, device=device)
+                    for key, width in attention.items()},
+                   {width: torch.zeros((tokens, width), dtype=torch.float8_e4m3fn, device=device)
+                    for width in {config.hidden, heads}})
 
     def rows(self, tokens, rows):
-        return Scratch(self.activations[:tokens], self.hidden[:rows], self.logits[:rows], self.gdn.rows(tokens))
+        return Scratch(self.activations[:tokens], self.hidden[:rows], self.logits[:rows], self.gdn.rows(tokens),
+                       self.mlp_gate[:tokens], self.mlp_up[:tokens], self.mlp_down[:tokens], self.mlp_input[:tokens],
+                       {key: value[:tokens] for key, value in self.attention.items()},
+                       {width: value[:tokens] for width, value in self.quantized.items()})
 
 
 class Projection(torch.nn.Module):
@@ -154,13 +173,16 @@ class PreparedDecoder:
             for i, kind in enumerate(weights.config.layers) if kind == "linear_attention"],
             dtype=torch.int64, device=scratch.activations.device)
         config, source = weights.config, scratch.activations
-        attention_buffers = {}
-        recurrent_projection_buffers = {}
-        mlp_buffers = {field: torch.zeros((source.shape[0], width), dtype=source.dtype, device=source.device)
-                       for field, width in (("gate_proj", config.text["intermediate_size"]),
-                                            ("up_proj", config.text["intermediate_size"]),
-                                            ("down_proj", config.hidden))}
-        mlp_input = torch.zeros_like(mlp_buffers["gate_proj"])
+        attention_buffers = dict(scratch.attention)
+        attention_buffers.update({("tensor_fp8_input", tuple(value.shape), value.device): value
+                                  for value in scratch.quantized.values()})
+        # Full and recurrent attention occupy different layers of the same
+        # serialized decoder. Each quantized input is consumed before reuse.
+        recurrent_projection_buffers = attention_buffers
+        # Graph variants already share activations and GDN scratch through row
+        # views. MLP intermediates have the same serialized, round-local lifetime.
+        mlp_buffers = dict(gate_proj=scratch.mlp_gate, up_proj=scratch.mlp_up, down_proj=scratch.mlp_down)
+        mlp_input = scratch.mlp_input
         self.layers = []
         for index, original in enumerate(weights.tree.layers):
             layer = module_copy(original)

@@ -297,6 +297,10 @@ def prepare(snapshot, config, *, progress=None, package_storage):
         preparation_state_bytes=int(pool.memory_capacity[0].item()) * layout.row_bytes,
         pages=pages, page_bytes=page_bytes(weights.config, draft=learned), page_tokens=PAGE_TOKENS,
         kv_bytes=pages * page_bytes(weights.config, draft=learned), completion_output_bytes=completion.nbytes, operator_scratch_bytes=arena.nbytes, graphs=len(graphs),
+        mlp_scratch_bytes=sum(t.nbytes for s in (prefill_storage, decode_storage)
+            for t in (s.mlp_gate, s.mlp_up, s.mlp_down, s.mlp_input)),
+        attention_scratch_bytes=sum(t.nbytes for s in (prefill_storage, decode_storage)
+            for t in (*s.attention.values(), *s.quantized.values())),
         prefill_capacities=prefill_sizes, free_device_bytes=free, total_device_bytes=total,
         headroom_bytes=config.headroom_bytes, tuning=tuning, compiled_decoder=config.compile_decoder)
     if speculation is not None:
