@@ -22,16 +22,24 @@ class Scratch:
     hidden: torch.Tensor
     logits: torch.Tensor
     gdn: GDNScratch
+    mlp_gate: torch.Tensor
+    mlp_up: torch.Tensor
+    mlp_down: torch.Tensor
+    mlp_input: torch.Tensor
 
     @classmethod
     def allocate(cls, tokens, rows, config, device):
         return cls(torch.zeros((tokens, config.hidden), dtype=torch.bfloat16, device=device),
                    torch.zeros((rows, config.hidden), dtype=torch.bfloat16, device=device),
                    torch.zeros((rows, config.vocabulary), dtype=torch.bfloat16, device=device),
-                   GDNScratch.allocate(tokens, device, hidden_size=config.hidden))
+                   GDNScratch.allocate(tokens, device, hidden_size=config.hidden),
+                   *(torch.zeros((tokens, width), dtype=torch.bfloat16, device=device)
+                     for width in (config.text["intermediate_size"], config.text["intermediate_size"],
+                                   config.hidden, config.text["intermediate_size"])))
 
     def rows(self, tokens, rows):
-        return Scratch(self.activations[:tokens], self.hidden[:rows], self.logits[:rows], self.gdn.rows(tokens))
+        return Scratch(self.activations[:tokens], self.hidden[:rows], self.logits[:rows], self.gdn.rows(tokens),
+                       self.mlp_gate[:tokens], self.mlp_up[:tokens], self.mlp_down[:tokens], self.mlp_input[:tokens])
 
 
 class Projection(torch.nn.Module):
@@ -122,11 +130,10 @@ class PreparedDecoder:
         self.delta = DeltaMetadata.allocate(metadata.starts.numel(), scratch.activations.device)
         config, source = weights.config, scratch.activations
         attention_buffers = {}
-        mlp_buffers = {field: torch.zeros((source.shape[0], width), dtype=source.dtype, device=source.device)
-                       for field, width in (("gate_proj", config.text["intermediate_size"]),
-                                            ("up_proj", config.text["intermediate_size"]),
-                                            ("down_proj", config.hidden))}
-        mlp_input = torch.zeros_like(mlp_buffers["gate_proj"])
+        # Graph variants already share activations and GDN scratch through row
+        # views. MLP intermediates have the same serialized, round-local lifetime.
+        mlp_buffers = dict(gate_proj=scratch.mlp_gate, up_proj=scratch.mlp_up, down_proj=scratch.mlp_down)
+        mlp_input = scratch.mlp_input
         self.layers = []
         for index, original in enumerate(weights.tree.layers):
             layer = module_copy(original)
