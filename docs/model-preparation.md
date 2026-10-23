@@ -166,13 +166,49 @@ For concurrency 32 with seven draft tokens per request, use
 It uses the canonical Qwen3.5 dense decoder with tensor-scaled FP8 attention
 projections and NVFP4 MLP and vocabulary weights. FP8 KV pages and Gated DeltaNet
 continuations reside in device memory; the recipe has no host-mapped tables,
-vision graphs, or learned draft model. Prepare on the same GPU architecture
+vision graphs, or host offload. The default dense recipe uses the checkpoint's native MTP layer. Prepare on the same GPU architecture
 as the serving device:
 
 ```sh
 .venv/bin/ignition export qwen3.8-27b --gpus 0 --max-concurrency 4 \
   --output /data/flare-runtime/qwen38-27b-tp1-c4.safetensors --verbose
 ```
+
+### Experimental DFlash2 drafting
+
+`qwen3.8-27b-dflash2` replaces recursive MTP drafting with the pinned five-layer
+BF16 [DFlash2 checkpoint](https://huggingface.co/z-lab/Qwen3.8-27B-DFlash2).
+`qwen3.8-27b-dflash2-nvfp4` selects the separately calibrated
+[NVFP4 RTNcal checkpoint](https://huggingface.co/maurienne-ai/Qwen3.8-27B-DFlash2-NVFP4-RTNcal).
+Both aliases retain the official mixed NVFP4/FP8 target checkpoint and its
+shared embedding and vocabulary head. They do not quantize the target or
+requantize the drafter during loading. The NVFP4 option preserves its 35
+independently scaled projections; feedback, selector and convolution tensors
+remain BF16. Draft KV stays BF16 even though the community checkpoint's card
+benchmarks FP8 KV in another engine.
+
+```sh
+.venv/bin/ignition export qwen3.8-27b-dflash2-nvfp4 --gpus 0 \
+  --output /data/flare-runtime/qwen38-27b-dflash2-nvfp4.safetensors --verbose
+flare run /data/flare-runtime/qwen38-27b-dflash2-nvfp4.safetensors \
+  --mtp-draft-tokens 7 --no-mtp-adaptive-verification
+```
+
+The initial catalog is limited to one active request, 32K context and seven
+proposals per round. Preparation permits prefill chunks through 4096 tokens.
+Grammar and host-stop requests use width one and still absorb committed target
+features. The complete 2048-token draft window is continuation state, including
+prefix snapshots and restore; each saved state adds 40 MiB. Only committed
+rows update that window, so rejected proposals never overwrite live context.
+Ordinary dense and MTP packages retain their existing contracts.
+
+The selector samples from Flare's request-filtered conditional distribution and
+retains that exact distribution for stochastic verification. This preserves the
+speculative transaction's target distribution; it does not claim the same draft
+sampling policy or throughput as SGLang. Target arithmetic can vary with batch
+and verification width, so token equality across widths is a diagnostic rather
+than a correctness criterion. This path also requires the shared FlashInfer
+paged-attention tail fix used by the native MTP qualification.
 
 ## Qwen3.8 Flash
 

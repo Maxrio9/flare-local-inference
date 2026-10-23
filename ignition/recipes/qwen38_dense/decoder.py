@@ -137,14 +137,19 @@ class FullAttention(torch.nn.Module):
 
 class PreparedDecoder:
     def __init__(self, weights, scratch, metadata, pool, *, mode, vocabulary_runtime,
-                 coordinator, session, name, workspace, scoring=None, records=None, verification_columns=1, retain_feedback=False):
+                 coordinator, session, name, workspace, scoring=None, records=None, verification_columns=1, retain_feedback=False, feature_layers=()):
         self.weights, self.scratch, self.metadata, self.pool = weights, scratch, metadata, pool
         self.embedding = PreparedEmbedding(weights.tree.embed_tokens.weight, metadata.token_ids,
             scratch.activations, num_rows=metadata.live_counts[:1], session=session, name=name + ".embedding")
         self.delta = DeltaMetadata.allocate(metadata.starts.numel(), scratch.activations.device,
             verification_columns=verification_columns)
         self.mode, self.records = mode, records
-        self.auxiliary = torch.zeros_like(scratch.activations) if retain_feedback else None
+        if retain_feedback and feature_layers:
+            raise ValueError("MTP final feedback and parallel-draft residual taps require separate decoders")
+        self.feature_layers = tuple(feature_layers)
+        self.features = (torch.zeros((scratch.activations.shape[0], len(feature_layers) * weights.config.hidden),
+            dtype=torch.bfloat16, device=scratch.activations.device) if feature_layers else None)
+        self.auxiliary = torch.zeros_like(scratch.activations) if retain_feedback else self.features
         self.convolution_offsets = torch.tensor([pool.layout.region(f"layer{i}.convolution").offset // 2
             for i, kind in enumerate(weights.config.layers) if kind == "linear_attention"],
             dtype=torch.int64, device=scratch.activations.device)
@@ -218,9 +223,12 @@ class PreparedDecoder:
         embedding = torch.cat((frequency, frequency), dim=-1)
         position_embeddings = embedding.cos().bfloat16(), embedding.sin().bfloat16()
         hidden = self.embedding()
-        for layer in self.layers:
+        for index, layer in enumerate(self.layers):
             hidden = layer(hidden, position_embeddings=position_embeddings)
-        if self.auxiliary is not None:
+            if index in self.feature_layers:
+                tap = self.feature_layers.index(index)
+                self.features[:, tap * hidden.shape[-1]:(tap + 1) * hidden.shape[-1]].copy_(hidden)
+        if self.auxiliary is not None and self.features is None:
             self.auxiliary.copy_(self.weights.tree.norm(hidden))
         if self.scoring is not None:
             self.scoring.source.copy_(self.weights.tree.norm(hidden))

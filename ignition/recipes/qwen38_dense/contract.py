@@ -12,17 +12,17 @@ FRONTEND = c.frontend(tools=p.QWEN_CODER, wrapping_newlines=1, terminal_markers=
         required_start="<|im_start|>system\n", required_marker="<|im_end|>"))
 
 
-def prepare(signatures, buffers, pool, *, vocabulary):
+def prepare(signatures, buffers, pool, *, vocabulary, draft_lag=None):
     inputs = {kind: c.text_inputs(kind) for kind in {s.kind for s in signatures.values()}}
     for kind in ("decode", "speculative"):
         if kind in inputs:
             inputs[kind].pop("token_ids", None)
     continuation = c.state_view("state_pool", pool.layout.row_bytes)
     cursor = None
-    if "draft_page_tables" in buffers:
+    if "draft_page_tables" in buffers or draft_lag is not None:
         consumed = pool.layout.region("consumed_tokens")
         cursor = dict(state=c.state_view("state_pool", pool.layout.row_bytes,
-            offset=consumed.offset, nbytes=consumed.nbytes), lag_tokens=1)
+            offset=consumed.offset, nbytes=consumed.nbytes), lag_tokens=1 if draft_lag is None else draft_lag)
     pending = c.state_view("request_pending_token", 8)
     regions = [c.history_region(buffers, f"cache.{name}", tensor, p.PAGED_KEY_VALUE)
                for name, tensor in pool.pages.items()]

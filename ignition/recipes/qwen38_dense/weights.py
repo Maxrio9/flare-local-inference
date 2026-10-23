@@ -22,6 +22,10 @@ class ModelWeights:
     shard: TensorParallelShard = TensorParallelShard(0, 1)
     draft: object = None
 
+    @property
+    def embedding(self):
+        return self.tree.embed_tokens.weight
+
     @classmethod
     def load(cls, manifest, device, *, progress=None):
         from transformers import Qwen3_5TextConfig, Qwen3_5TextModel

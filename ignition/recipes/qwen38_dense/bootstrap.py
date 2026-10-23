@@ -43,6 +43,7 @@ from .weights import ModelWeights
 
 @dataclass(frozen=True)
 class PreparationConfig:
+    draft_checkpoint: Path | None = None
     history_drafts: bool = False
     mtp: bool = False
     speculative_widths: tuple[int, ...] = (1, 2, 3, 4)
@@ -64,8 +65,10 @@ class PreparationConfig:
 
     def __post_init__(self):
         request_capacity(self.max_active)
-        if self.speculative_proposal_source != "mtp":
-            raise ValueError("dense speculative decoding requires the native MTP proposal source")
+        if self.speculative_proposal_source not in ("mtp", "dflash2"):
+            raise ValueError("dense speculative decoding requires MTP or DFlash2")
+        if (self.speculative_proposal_source == "dflash2") != (self.draft_checkpoint is not None):
+            raise ValueError("DFlash2 requires an explicit draft checkpoint")
         if self.history_drafts:
             raise ValueError("dense learned proposals do not yet combine history drafts")
         if self.speculative_fixed_width is not None and self.speculative_fixed_width not in self.speculative_widths:
@@ -99,11 +102,19 @@ def prepare(snapshot, config, *, progress=None, package_storage):
     weights = ModelWeights.load(manifest, device, progress=progress)
     release_unused()
     drafts = max(config.speculative_widths) - 1 if config.mtp else 0
-    learned = config.mtp
+    learned = config.mtp and config.speculative_proposal_source == "mtp"
+    parallel = config.mtp and config.speculative_proposal_source == "dflash2"
     draft_weights = None
     if learned:
         from .mtp_weights import MTPWeights
         draft_weights = MTPWeights.load(manifest, weights.config, device, progress=progress)
+    if parallel:
+        from dataclasses import replace
+        from .dflash2_config import DFlash2Config
+        from .dflash2_weights import DFlash2Weights
+        weights = replace(weights, config=replace(weights.config, draft=DFlash2Config.load(config.draft_checkpoint, weights.config)))
+        draft_weights = DFlash2Weights.load(config.draft_checkpoint, weights.config.draft, device, progress=progress)
+        weights = replace(weights, draft=draft_weights)
     layout = continuation_layout(weights.config, speculative_tokens=drafts, draft=learned)
     snapshots = layout.snapshot_capacity(config.snapshot_budget_bytes)
     if snapshots < 1:
@@ -128,6 +139,7 @@ def prepare(snapshot, config, *, progress=None, package_storage):
         coordinator = None
         identity = hashlib.sha256(json.dumps({
             "config": weights.config.text, "headers": [s.header_sha256 for s in manifest.shards],
+            **({"draft_config": weights.config.draft.text, "draft_payload_sha256": draft_weights.checkpoint_sha256} if parallel else {}),
             "contract": "qwen38-dense.graph-inputs.v1"}, sort_keys=True).encode()).hexdigest()
         session = RecordedPreparationSession(
             compile_workers=config.compile_workers, tuning_replica=config.tuning_replica,
@@ -148,6 +160,9 @@ def prepare(snapshot, config, *, progress=None, package_storage):
             request_pending_token=requests.pending_token,
             sampling_grammar_mask=requests.grammar_mask, frame_index=frame,
             submission_sequence=sequence, **completion.buffers())
+    ordinary_weights = weights
+    if parallel:
+        ordinary_weights = replace(weights, draft=None)
     scoring = PromptScoring.allocate(config, device, buffers, frame=frame)
     forwards, signatures, metadata = {}, {}, {}
     absorptions = []
@@ -155,6 +170,8 @@ def prepare(snapshot, config, *, progress=None, package_storage):
     speculation = None
     if config.mtp:
         from .speculative import SpeculativePreparation
+        if parallel:
+            from .dflash2 import DFlashPreparation as SpeculativePreparation
         speculation = SpeculativePreparation(weights, pool, requests, inputs, decode_storage,
             completion, frame, sequence, width=drafts + 1, session=session, workspace=arena, draft_weights=draft_weights)
         if learned:
@@ -180,7 +197,7 @@ def prepare(snapshot, config, *, progress=None, package_storage):
                 name = f"{kind}{capacity}"
                 m = metadata[name] = Metadata.allocate(capacity, rows, blocks, device)
                 scratch = (prefill_storage if mode == "prefill" else decode_storage).rows(capacity, rows)
-                decoder = PreparedDecoder(weights, scratch, m, pool, mode=mode,
+                decoder = PreparedDecoder(ordinary_weights, scratch, m, pool, mode=mode,
                     scoring=scoring if kind == "scored_prefill" else None,
                     vocabulary_runtime=None, coordinator=coordinator, session=session, name=name, workspace=arena)
                 batch = PreparedBatch(inputs, requests, m, mode=mode, shard=weights.shard, pool=pool)
@@ -191,7 +208,7 @@ def prepare(snapshot, config, *, progress=None, package_storage):
         row_inputs = ("request_state_rows", "row_slot_ids", "row_generations", "live_rows")
         for capacity in reversed(batch_sizes):
             name = f"resume{capacity}"
-            forward = PreparedResume(weights, requests, pool, inputs, completion, frame, sequence,
+            forward = PreparedResume(ordinary_weights, requests, pool, inputs, completion, frame, sequence,
                 rows=capacity, runtime=None, vocabulary_runtime=None, coordinator=coordinator,
                 session=session, name=name, activation_mode="auto")
             add(name, forward, "resume", capacity, 1, (*row_inputs, "sampling_grammar_mask"))
@@ -208,8 +225,10 @@ def prepare(snapshot, config, *, progress=None, package_storage):
                 if signature.kind in ("prefill", "scored_prefill", "resume"):
                     from dataclasses import replace
                     forward = forwards[name]
-                    if learned and signature.kind in ("prefill", "scored_prefill"):
+                    if (learned or parallel) and signature.kind in ("prefill", "scored_prefill"):
                         from .mtp import PrefillAbsorption
+                        if parallel:
+                            from .dflash2 import PrefillContext as PrefillAbsorption
                         generation = forward.forward if signature.kind == "scored_prefill" else forward
                         absorption = PrefillAbsorption(speculation, generation.decoder, name)
                         absorptions.append(absorption)
@@ -227,7 +246,7 @@ def prepare(snapshot, config, *, progress=None, package_storage):
                     name = f"{mode}{batch}-spec"
                     forward = PreparedMaintenance(mode, requests, pool, commands, inputs, completion, frame, sequence,
                         runtime=None, coordinator=coordinator, session=session, name=name, capacity=batch,
-                        admission_buffers=admission, draft_state=learned,
+                        admission_buffers=admission, draft_state=learned or parallel,
                         draft_tables=speculation.draft_tables if learned else None)
                     fields = row_inputs if mode == "snapshot" else ("request_state_rows", *admission.__dataclass_fields__)
                     add(name, forward, mode, batch, 1, (*fields, "page_tables", *commands.buffers()), enabled=True)
@@ -265,12 +284,12 @@ def prepare(snapshot, config, *, progress=None, package_storage):
         prefill_chunk_size=config.prefill_chunk_size, pages=pages, state_rows=state_rows, snapshots=snapshots,
         page_tokens=PAGE_TOKENS, frontend=prepare_frontend(snapshot, eos_token_ids=eos_ids),
         sampling_defaults=RECIPE.sampling_defaults.as_dict(), assets=assets,
-        model_contract=prepare_contract(signatures, buffers, pool, vocabulary=vocabulary))
+        model_contract=prepare_contract(signatures, buffers, pool, vocabulary=vocabulary, draft_lag=0 if parallel else None))
     if speculation is not None:
         server_config.update(speculative_widths=config.speculative_widths,
             speculative_token_capacity=speculative_token_capacity(config.max_active, max(config.speculative_widths), config.speculative_token_capacity),
             speculative_fixed_width=config.speculative_fixed_width,
-            speculative_proposal_source=config.speculative_proposal_source, history_drafts=config.history_drafts)
+            speculative_proposal_source="mtp" if parallel else config.speculative_proposal_source, history_drafts=config.history_drafts)
     free, total = torch.cuda.mem_get_info(device)
     memory = dict(rank=0, world_size=1, device=config.device, weights_bytes=weights.allocated_bytes + (0 if draft_weights is None else draft_weights.allocated_bytes),
         mapped_host_bytes=0, offloaded_bytes=0, continuation_bytes=pool.backing.nbytes, state_rows=state_rows,
@@ -281,19 +300,24 @@ def prepare(snapshot, config, *, progress=None, package_storage):
         prefill_capacities=prefill_sizes, free_device_bytes=free, total_device_bytes=total,
         headroom_bytes=config.headroom_bytes, tuning=tuning, compiled_decoder=config.compile_decoder)
     if speculation is not None:
-        memory.update(speculative_sampling_scratch_bytes=speculation.storage.nbytes,
-            mtp_prefill_scratch_bytes=sum(a.scratch_bytes for a in absorptions),
-            gdn_verification_record_bytes=sum(t.nbytes for t in
-                (speculation.records.delta, speculation.records.keys, speculation.records.decay)))
+        if parallel:
+            memory.update(speculative_round_scratch_bytes=speculation.storage.nbytes + speculation.layer_buffers.nbytes,
+                draft_context_scratch_bytes=speculation.context_storage.nbytes)
+        else:
+            memory.update(speculative_sampling_scratch_bytes=speculation.storage.nbytes,
+                mtp_prefill_scratch_bytes=sum(a.scratch_bytes for a in absorptions))
+        memory["gdn_verification_record_bytes"] = sum(t.nbytes for t in
+            (speculation.records.delta, speculation.records.keys, speculation.records.decay))
     if scoring is not None:
         memory.update(scoring.memory_report())
     return PreparedModel(forwards={name: compiled.get(name, forward) for name, forward in forwards.items()},
-        rebuild_weights={"weights": weights, **({"mtp": draft_weights} if learned else {})}, device=config.device, graphs=graphs, buffers=buffers, signatures=signatures,
+        rebuild_weights={"weights": weights, **({"mtp" if learned else "draft": draft_weights} if learned or parallel else {})}, device=config.device, graphs=graphs, buffers=buffers, signatures=signatures,
         max_active=config.max_active, session=session, server_config=server_config, memory_report=memory,
         close_resources=(() if scoring is None else (scoring,)),
         export_zero_ranges=(*(() if scoring is None else scoring.zero_ranges()),
                            *storage_ranges([prefill_storage, decode_storage, arena.tensor, metadata,
-                               *((speculation.storage,) if speculation is not None else ())]),
+                               *((speculation.storage,) if speculation is not None else ()),
+                               *((speculation.layer_buffers, speculation.context_storage) if parallel else ())]),
                            *completion.zero_ranges()),
         resources=(scoring, weights, pool, requests, inputs, admission, commands, arena, forwards, prefill_storage,
                    decode_storage, metadata, compiled, stream, graph_pool, session, coordinator, speculation))

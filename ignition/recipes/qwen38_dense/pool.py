@@ -33,6 +33,12 @@ def continuation_layout(config, *, speculative_tokens=0, draft=False):
                             (f"layer{index}.recurrent", (48, 128, 128), torch.float32)))
     regions.extend((name, (2, *shape) if name.startswith("draft.") else shape, torch.uint8)
                    for name, shape in page_specs(config, draft=draft))
+    if config.draft is not None:
+        c = config.draft.text
+        for index in range(config.draft.layers):
+            for field in ("key", "value"):
+                regions.append((f"draft{index}.{field}",
+                    (c["sliding_window"], c["num_key_value_heads"], c["head_dim"]), torch.bfloat16))
     regions.extend((("last_hidden", (config.hidden,), torch.bfloat16),
                     ("consumed_tokens", (1,), torch.int64)))
     return StateLayout.from_specs(regions)
