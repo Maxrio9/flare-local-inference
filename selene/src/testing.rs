@@ -1,3 +1,8 @@
+/*
+ * SPDX-FileCopyrightText: Copyright (c) 2026 Flare community contributors
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
 //! Fixtures for tests of this crate and of the crates that implement its seams.
 
 pub use crate::pool::{engine::RESTORE_DEADLINE, net::{Roots, trusted}, options::pool_address};

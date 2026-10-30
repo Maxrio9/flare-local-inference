@@ -1,3 +1,8 @@
+/*
+ * SPDX-FileCopyrightText: Copyright (c) 2026 Flare community contributors
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
 //! A host store attached to a pool.
 //!
 //! [`PooledStore`] wraps the local host store and a [`PoolClient`]. Local

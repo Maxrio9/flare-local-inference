@@ -1,3 +1,9 @@
+/*
+ * SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-FileCopyrightText: Copyright (c) 2026 Flare community contributors
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
 //! Local copies write through; pooled copies spill under headroom pressure.
 //! A full disk keeps restorable DRAM copies and parent pins until reservation.
 //! The disk index also holds uncharged parked metadata; DRAM links are flat.

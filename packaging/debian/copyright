@@ -1,7 +1,7 @@
 Flare
-https://github.com/NVIDIA/flare-local-inference
+https://github.com/NVIDIA/spark-local-inference
 
-Copyright 2026 NVIDIA Corporation
+Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 Copyright 2026 Flare community contributors
 
 Licensed under the Apache License, Version 2.0.
@@ -11,3 +11,6 @@ On Debian systems, the complete license is available at
 Dependency copyright notices and license texts are included in the
 third-party-licenses directory beside this file. Package manifests there
 identify each dependency's source and declared license.
+
+Attributions for adapted source code are included in NOTICE beside this file.
+The PyTorch copyright notices and license are included in licenses/PyTorch.txt.

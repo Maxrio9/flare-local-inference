@@ -1,3 +1,8 @@
+/*
+ * SPDX-FileCopyrightText: Copyright (c) 2026 Flare community contributors
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
 //! The I/O thread: connect, check Hello, open the session, and run the engine
 //! until the session ends; then drain and reconnect.
 

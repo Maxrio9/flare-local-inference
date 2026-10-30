@@ -1,3 +1,8 @@
+/*
+ * SPDX-FileCopyrightText: Copyright (c) 2026 Flare community contributors
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
 //! Pool protocol, copies between instances that are not on the manager's host: a source
 //! reached over TCP writes the windows of an export to the manager on the data channel,
 //! and the manager relays them to the requester, over its own data channel or through

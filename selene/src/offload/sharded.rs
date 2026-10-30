@@ -1,3 +1,8 @@
+/*
+ * SPDX-FileCopyrightText: Copyright (c) 2026 Flare community contributors
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
 //! Disk records of a model whose ranks run as separate processes on separate hosts.
 //!
 //! Each host keeps the record files of its own rank in its own record directory. A file holds

@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2026 Flare community contributors
+# SPDX-License-Identifier: Apache-2.0
+
 """Kimi K3 DSpark: accepted-state context, sliding-window Qwen3 proposals and the Markov transition.
 
 Accepted target positions project their auxiliary AttnRes states once into every draft layer's key

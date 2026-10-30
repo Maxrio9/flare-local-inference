@@ -1,3 +1,8 @@
+/*
+ * SPDX-FileCopyrightText: Copyright (c) 2026 Flare community contributors
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
 //! What a host tier holds, as the pool hears of it, and the pins and checksum
 //! thread an export from that tier needs.
 

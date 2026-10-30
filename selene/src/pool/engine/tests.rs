@@ -1,3 +1,8 @@
+/*
+ * SPDX-FileCopyrightText: Copyright (c) 2026 Flare community contributors
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
 //! The client state machine, driven by scripted manager messages, a fake page
 //! copier that executes its jobs when the test says so, and heap regions
 //! standing in for the shared memory.

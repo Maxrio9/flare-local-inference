@@ -1,3 +1,8 @@
+/*
+ * SPDX-FileCopyrightText: Copyright (c) 2026 Flare community contributors
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
 //! The announcement index: what each source says it holds, per scope.
 //!
 //! Entries are hints. They are keyed by `(key, tier)` inside one source, and a

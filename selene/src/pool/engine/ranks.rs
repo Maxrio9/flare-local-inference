@@ -1,3 +1,8 @@
+/*
+ * SPDX-FileCopyrightText: Copyright (c) 2026 Flare community contributors
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
 //! Rank 0's side of a multi-process instance: the links to the peer ranks' agents and the
 //! transfers it fans out over them.
 //!

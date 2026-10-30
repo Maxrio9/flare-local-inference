@@ -1,3 +1,8 @@
+/*
+ * SPDX-FileCopyrightText: Copyright (c) 2026 Flare community contributors
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
 //! Manager configuration: command line and validation.
 //!
 //! This module is self-contained so it can be unit-tested without starting a manager.

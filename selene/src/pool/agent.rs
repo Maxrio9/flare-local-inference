@@ -1,3 +1,8 @@
+/*
+ * SPDX-FileCopyrightText: Copyright (c) 2026 Flare community contributors
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
 //! The rank agent: the part of a multi-process instance that runs in each peer rank.
 //!
 //! Rank 0 of such an instance decides everything. A peer rank runs a [`RankAgent`], which

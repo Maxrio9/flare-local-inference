@@ -1,4 +1,8 @@
 #!/usr/bin/env bash
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2026 Flare community contributors
+# SPDX-License-Identifier: Apache-2.0
+
 set -euo pipefail
 
 : "${PACKAGE_VERSION:?package version is required}"
@@ -14,6 +18,7 @@ install -Dm755 flare/target/release/flare "$stage/usr/bin/flare"
 docs="$stage/usr/share/doc/flare-inference"
 install -Dm644 packaging/debian/copyright "$docs/copyright"
 install -m644 LICENSE NOTICE "$docs/"
+install -Dm644 helios/licenses/PyTorch.txt "$docs/licenses/PyTorch.txt"
 install -m644 packaging/debian/README "$docs/README.Debian"
 install -Dm644 packaging/debian/lintian-overrides "$stage/usr/share/lintian/overrides/flare-inference"
 install -Dm644 packaging/debian/flare.1 "$stage/usr/share/man/man1/flare.1"

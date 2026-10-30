@@ -1,3 +1,8 @@
+/*
+ * SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
 //! Readable cache-entry names: `<platform>-tp<N>-<UTC timestamp>`.
 //!
 //! Names are display metadata only. Payload and package identities remain

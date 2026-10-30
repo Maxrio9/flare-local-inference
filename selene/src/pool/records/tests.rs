@@ -1,3 +1,8 @@
+/*
+ * SPDX-FileCopyrightText: Copyright (c) 2026 Flare community contributors
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
 use super::*;
 use crate::{pool::RankRecords, testing::geometry};
 use std::{path::Path, time::SystemTime};

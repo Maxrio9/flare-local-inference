@@ -1,3 +1,8 @@
+/*
+ * SPDX-FileCopyrightText: Copyright (c) 2026 Flare community contributors
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
 use super::super::tests::{scheduler, spec};
 use super::*;
 use crate::cache::{Publication, StateSnapshot};

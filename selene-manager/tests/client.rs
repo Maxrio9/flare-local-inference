@@ -1,3 +1,8 @@
+/*
+ * SPDX-FileCopyrightText: Copyright (c) 2026 Flare community contributors
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
 //! The client against the real manager, in process over a Unix socket: two
 //! instances sharing records through shared memory, a put into the manager's
 //! store, characterization, and a manager that restarts.

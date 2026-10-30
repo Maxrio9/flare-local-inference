@@ -1,3 +1,9 @@
+/*
+ * SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-FileCopyrightText: Copyright (c) 2026 Flare community contributors
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
 use super::{Decoded, Protocol};
 use crate::{
     Result,
@@ -1021,7 +1027,7 @@ mod native_prompt_tests {
             "media_type":"image/png", "data":base64::engine::general_purpose::STANDARD.encode(png)}});
         for (template, encoding, layout, placeholder) in [
             (
-                include_str!("../../../../ignition/recipes/qwen38/assets/chat_template.jinja"),
+                &crate::template_fixtures::template("qwen38", "chat_template")[..],
                 TemplateEncoding::Text,
                 ImageLayoutKind::Qwen,
                 "<|image_pad|>",

@@ -1,6 +1,40 @@
 Flare
-Copyright 2026 NVIDIA Corporation
+Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 Copyright 2026 Flare community contributors
 
 Licensed under the Apache License, Version 2.0.
 See LICENSE for the full license text.
+
+Third-party code and attributions
+================================
+
+vLLM
+----
+Copyright contributors to the vLLM project
+Licensed under the Apache License, Version 2.0 (see LICENSE).
+
+ignition/components/markov_sampling.py adapts the sequential vocabulary-block
+schedule from vLLM's DS41 fused Markov sampler:
+https://github.com/vllm-project/vllm/blob/df3bd094/vllm/models/deepseek_v41/amd/ops/fused_markov.py
+Flare's implementation changes score rounding, explicit proposal probabilities,
+and random-number domains for its probability-based rejection contract.
+The upstream copyright notice is retained in that source file.
+
+PyTorch
+-------
+helios/src/frontend/images/resize.rs adapts the resize coefficient generator
+and uint8 antialiased convolution from PyTorch's UpSampleKernel.cpp:
+https://github.com/pytorch/pytorch/blob/cf30153c4c131c8164ee7798e5022d810682e2cb/aten/src/ATen/native/cpu/UpSampleKernel.cpp
+The scalar Rust implementation preserves adaptive coefficient precision and
+intermediate uint8 rounding.
+
+PyTorch's copyright notices and BSD-style license terms are reproduced in
+helios/licenses/PyTorch.txt and heliopause/licenses/PyTorch.txt in the source
+tree, and licenses/PyTorch.txt in the installed Flare package documentation.
+The original copyright notices are also retained in the adapted source file.
+
+DeepSeek
+--------
+Copyright (c) 2023 DeepSeek
+The MIT license supplied with the DeepSeek recipe assets is retained at
+ignition/recipes/deepseek41/assets/LICENSE.

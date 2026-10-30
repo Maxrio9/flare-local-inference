@@ -1,3 +1,8 @@
+/*
+ * SPDX-FileCopyrightText: Copyright (c) 2026 Flare community contributors
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
 //! The host tiers announce what they hold and serve it as exports, against the
 //! real memory store and a simulated GPU.
 

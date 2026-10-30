@@ -1,3 +1,8 @@
+/*
+ * SPDX-FileCopyrightText: Copyright (c) 2026 Flare community contributors
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
 //! Host-tier tests that need a CUDA device and an exported package.
 //!
 //! Selene's own tests cover the stores against copiers that never touch a

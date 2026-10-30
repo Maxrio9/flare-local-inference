@@ -1,3 +1,8 @@
+/*
+ * SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
 //! Recipient headers with internal message boundaries and ATEM function arguments.
 
 use super::{Event, Input, Termination, tagged::OutputConfig};

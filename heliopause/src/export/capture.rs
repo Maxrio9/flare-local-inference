@@ -1,3 +1,8 @@
+/*
+ * SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
 //! Capture prepared CUDA graph declarations and their reachable storage.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};

@@ -1,3 +1,8 @@
+/*
+ * SPDX-FileCopyrightText: Copyright (c) 2026 Flare community contributors
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
 //! The worker for host window fills, rank-record reads and hashing.
 //! Started on first use; jobs retain what they read until completion.
 

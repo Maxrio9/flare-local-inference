@@ -1,3 +1,8 @@
+/*
+ * SPDX-FileCopyrightText: Copyright (c) 2026 Flare community contributors
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
 //! Exports of host-tier holdings: pinned record chains that fill windows from
 //! slabs in memory or from record files.
 

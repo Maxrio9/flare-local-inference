@@ -1,3 +1,8 @@
+/*
+ * SPDX-FileCopyrightText: Copyright (c) 2026 Flare community contributors
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
 //! Host tiers for prefix checkpoints: DRAM slabs and local record files.
 //!
 //! Selene holds the host-tier index, the eviction policy, the record format and

@@ -1,3 +1,8 @@
+/*
+ * SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
 //! Bounded safetensors containers for payload-based packages.
 //!
 //! Both canonical forms use the same schema: a primary with metadata tensors and

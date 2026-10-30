@@ -1,3 +1,8 @@
+/*
+ * SPDX-FileCopyrightText: Copyright (c) 2026 Flare community contributors
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
 //! Starting, serving and stopping a manager: the store's owner thread, the pool actor, the
 //! Unix socket every instance on this host connects to, the optional listener for instances on
 //! other hosts, and the metrics endpoint.

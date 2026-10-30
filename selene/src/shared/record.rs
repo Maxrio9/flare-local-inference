@@ -1,3 +1,9 @@
+/*
+ * SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-FileCopyrightText: Copyright (c) 2026 Flare community contributors
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
 //! Record files: one checkpoint per file, self-describing, aligned for direct I/O.
 //!
 //! A record lives at `<directory>/<consumed>-<digest>.ckpt`, with the consumed

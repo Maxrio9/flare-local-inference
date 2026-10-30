@@ -1,3 +1,8 @@
+/*
+ * SPDX-FileCopyrightText: Copyright (c) 2026 Flare community contributors
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
 //! Framed byte links shared by the rank record relay and pool protocol.
 use crate::{
     Error, InboundTicket, JobId, PageId, PrefixKey, PublishedCheckpoint, Result, SharedCopier,

@@ -1,3 +1,9 @@
+/*
+ * SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-FileCopyrightText: Copyright (c) 2026 Flare community contributors
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
 //! Incremental think/tool envelopes with statically selected model payload syntax.
 
 use super::{Event, Input, ModelOutput, Progress, ReasoningParser, Termination, ToolCallParser};

@@ -1,3 +1,8 @@
+/*
+ * SPDX-FileCopyrightText: Copyright (c) 2026 Flare community contributors
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
 //! Pool handovers keep local records until the manager commits a copy.
 //! Refusals release selection and retry on manager progress or a short backoff.
 //! Manager loss unwinds waiting selections; active moves retain their pins

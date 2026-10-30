@@ -1,3 +1,8 @@
+/*
+ * SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
 //! Assemble signed-payload package files from captured source ranges.
 //!
 //! Capture records where each semantic weight group's bytes live in the rank's

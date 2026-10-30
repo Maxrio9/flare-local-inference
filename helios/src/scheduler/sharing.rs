@@ -1,3 +1,8 @@
+/*
+ * SPDX-FileCopyrightText: Copyright (c) 2026 Flare community contributors
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
 //! Scheduler state a shared prefix pool needs: eviction notices, the export
 //! chain of a GPU checkpoint, and the read-only headroom check for pinning it.
 

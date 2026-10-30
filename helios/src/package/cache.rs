@@ -1,3 +1,8 @@
+/*
+ * SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
 //! Immutable payload model cache: content-addressed objects, published directory
 //! entries, process-owned leases, and crash-safe reclamation.
 //!

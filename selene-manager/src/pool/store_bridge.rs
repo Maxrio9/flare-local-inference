@@ -1,3 +1,8 @@
+/*
+ * SPDX-FileCopyrightText: Copyright (c) 2026 Flare community contributors
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
 //! The manager's own store as a participant in the pool protocol.
 //!
 //! The pool owns window credits and buffer holds. The store owner thread keeps
