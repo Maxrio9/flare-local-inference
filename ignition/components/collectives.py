@@ -396,6 +396,8 @@ def _gather_transport_view(tensor):
 def _gather_columns(source, output, handle):
     source, output = _gather_transport_view(source), _gather_transport_view(output)
     owner = _OWNERS[handle]
+    from ignition.preparation.startup_tuning import record_consumer
+    record_consumer(owner)
     runtime = owner.runtime
     if owner.roce:
         runtime.all_gather(source, dim=-1, out=output, plan=owner.plan)
@@ -603,12 +605,34 @@ class PreparedAllGather:
         call = {"local_input": transport_source.view(source.shape[0], runtime.heads_per_rank, runtime.query_head_dim),
                 "out": transport_output.view(output.shape[0], runtime.total_heads, runtime.query_head_dim)}
         query = pcie.query_from_runtime(runtime, surface="DcpAllToAll.all_gather_heads", call=call)
+        startup = False
+        if getattr(session, "collective_tuning", "static") == "runtime":
+            from dataclasses import replace
+            from b12x.preparation import FrozenMapping
+            from ignition.preparation.collective_ladder import select_gather
+
+            ladder = session.collective_ladder
+            if ladder is None:
+                raise ValueError("runtime collective tuning requires a collective ladder")
+            if ladder["all_gather"] is not None:
+                row = select_gather(ladder, source.numel() * source.element_size(),
+                    world_size=runtime.world_size, capability=torch.cuda.get_device_capability(source.device))
+                self.runtime_profiles = tuple((mode, active) for mode, counts in row["profiles"].items() for active in counts)
+                self.runtime_cache_policy = ladder["cache_policy"]
+                query = replace(query, call=FrozenMapping(dict(query.call,
+                    gather_transport=row["implementation"].removeprefix("gather_"),
+                    threads=row["threads"], block_limit=row["blocks"],
+                    submode=self.runtime_profiles[0][0], active_blocks=1)))
+                startup = True
         self.plan = pcie.plan(query, runtime=runtime)
         ranks = tuple(dist.get_process_group_ranks(runtime.exchange_group))
         declare(session, (self.plan.request(name=name,
             prepare_call=lambda state: PreparedCall(run=lambda: state.run(**call), output=output,
                                                     owners=(runtime, source, output)),
             collective=CollectiveRequirement(key=name, ranks=ranks)),), coordinator=coordinator)
+        if startup:
+            from ignition.preparation.startup_tuning import register_collective
+            register_collective(self, session)
         self.handle = next(_HANDLES)
         _OWNERS[self.handle] = self
 

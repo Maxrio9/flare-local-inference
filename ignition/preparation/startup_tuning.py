@@ -99,8 +99,9 @@ class CollectiveStartupTuning:
         groups, owner_groups = {}, {}
         for owner in self.owners:
             spec = joint_startup_spec(owner.plan, profiles=owner.runtime_profiles)
-            groups.setdefault(spec.key, []).append(spec)
-            owner_groups[id(owner)] = spec.key
+            key = (spec.key, id(spec.state.runtime))
+            groups.setdefault(key, []).append(spec)
+            owner_groups[id(owner)] = key
         selectors = {key: tuple(spec.selector.data_ptr() for spec in specs) for key, specs in groups.items()}
         policies = {owner_groups[id(owner)]: owner.runtime_cache_policy for owner in self.owners}
         self.groups = {key: self.groups[key] if self.group_selectors.get(key) == selectors[key]
