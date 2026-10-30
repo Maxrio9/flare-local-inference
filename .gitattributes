@@ -1,0 +1,3 @@
+# Preserve upstream license and notice bytes, including original line endings.
+third_party/rust/** -text
+packaging/license-supplements/** -text

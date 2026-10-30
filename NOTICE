@@ -5,6 +5,9 @@ Copyright 2026 Flare community contributors
 Licensed under the Apache License, Version 2.0.
 See LICENSE for the full license text.
 
+Native dependency licenses and source locations are listed in
+THIRD_PARTY_NOTICES.md and third_party/rust/README.md.
+
 Third-party code and attributions
 ================================
 
@@ -38,3 +41,9 @@ DeepSeek
 Copyright (c) 2023 DeepSeek
 The MIT license supplied with the DeepSeek recipe assets is retained at
 ignition/recipes/deepseek41/assets/LICENSE.
+
+libjpeg-turbo
+-------------
+This software is based in part on the work of the Independent JPEG
+Group.
+The libjpeg-turbo license texts are linked from third_party/rust/README.md.

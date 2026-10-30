@@ -23,8 +23,8 @@ COPY selene-manager/ selene-manager/
 COPY ignition/recipes/qwen38/assets/ ignition/recipes/qwen38/assets/
 COPY ignition/recipes/step5/assets/ ignition/recipes/step5/assets/
 COPY ignition/recipes/kimi3/assets/ ignition/recipes/kimi3/assets/
-COPY LICENSE NOTICE ./
-COPY packaging/debian/ packaging/debian/
+COPY LICENSE NOTICE THIRD_PARTY_NOTICES.md ./
+COPY packaging/ packaging/
 ARG PACKAGE_VERSION
 ARG SOURCE_COMMIT
 ARG SOURCE_DATE_EPOCH
@@ -33,7 +33,8 @@ ARG TARGETARCH
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
     --mount=type=cache,id=flare-deb-noble-${TARGETARCH},target=/src/flare/target \
-    cargo build --locked --release --jobs 8 --manifest-path flare/Cargo.toml --bin flare \
+    rustup component add rust-docs \
+    && cargo build --locked --release --jobs 8 --manifest-path flare/Cargo.toml --bin flare \
     && packaging/debian/package.sh
 
 FROM scratch AS artifact
