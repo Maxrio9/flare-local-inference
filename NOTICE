@@ -11,6 +11,23 @@ THIRD_PARTY_NOTICES.md and third_party/rust/README.md.
 Third-party code and attributions
 ================================
 
+FlashInfer/b12x RoCE proxy
+-------------------------
+helios/native/roce_proxy.c was contributed by its original author from:
+https://github.com/local-inference-lab/flashinfer/blob/f5f5341d711f8210ce91af5731a0841570f70e53/flashinfer/experimental/b12x/comm/roce/_roce_proxy.c
+The proxy is compiled into Linux aarch64 builds. Its implementation is unchanged
+from that revision; Flare adds a license and provenance preamble.
+The upstream Apache-2.0 license is reproduced in helios/licenses/FlashInfer.txt
+in the source tree and licenses/FlashInfer.txt in binary distributions.
+
+libibverbs
+----------
+The RoCE proxy uses libibverbs and its inline header interfaces under the
+OpenIB.org BSD license alternative. The verbs.h copyright and license notice
+is retained in helios/licenses/libibverbs.txt in the source tree and
+licenses/libibverbs.txt in binary distributions. The shared library itself
+is supplied by the user's operating system.
+
 vLLM
 ----
 Copyright contributors to the vLLM project
