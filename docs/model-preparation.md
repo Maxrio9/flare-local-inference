@@ -875,7 +875,7 @@ The draft consumes AttnRes mixtures entering target layers 24, 48, 72, 88,
 and 92, before input normalization. Its five causal Qwen3 layers use
 2,048-token BF16 key/value windows. An anchor followed by mask tokens produces
 seven proposals; each preceding proposal conditions the Markov bias.
-Ignition uses greedy proposals and adaptive target verification widths,
+Ignition samples proposals and uses adaptive target verification widths,
 without the draft's confidence head. The
 [Red Hat model card](https://huggingface.co/RedHatAI/Kimi-K3-speculator.dspark)
 reports eight-token probabilistic proposals with block rejection sampling,

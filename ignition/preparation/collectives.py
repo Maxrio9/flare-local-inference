@@ -107,14 +107,6 @@ def create_result_broadcast_runtime(group, device, *, layouts, ipc=None):
         columns=256 * dist.get_world_size(group), ipc=ipc)
 
 
-def create_vocabulary_argmax_runtime(group, device, *, local_vocab_size, max_rows, ipc=None):
-    """Allocate b12x exchange slabs for exact greedy tokens over vocabulary shards (TP8, TP12 or TP16)."""
-    from b12x.comm.pcie.pcie_vocab_argmax import PCIeVocabParallelArgmax
-
-    return PCIeVocabParallelArgmax.from_exchange_group(exchange_group=group, device=device,
-        local_vocab_size=local_vocab_size, max_batch_size=max_rows, ipc=ipc)
-
-
 def create_dma_all_reduce_runtime(group, device, *, max_tokens, hidden_size, ipc=None, element_bytes=2):
     """Allocate a b12x copy-engine ring for prefill reductions in caller-owned shared storage."""
     from b12x.comm.pcie import DmaAllReduce
